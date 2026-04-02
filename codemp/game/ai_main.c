@@ -7594,6 +7594,31 @@ int BotAIStartFrame(int time) {
 			continue;
 		}
 
+		if (g_entities[i].client->sess.isBot2) {
+			gentity_t *ent = &g_entities[i];
+			usercmd_t ucmd;
+			memset(&ucmd, 0, sizeof(ucmd));
+
+			// Sync the command time with the server so the physics engine accepts it
+			ucmd.serverTime = level.time;
+
+			// Maintain current look direction so it doesn't snap to origin.
+			// idTech 3 requires us to subtract delta_angles to prevent a feedback loop (spinning).
+			ucmd.angles[YAW] = ANGLE2SHORT(ent->client->ps.viewangles[YAW]) - ent->client->ps.delta_angles[YAW];
+			ucmd.angles[PITCH] = ANGLE2SHORT(ent->client->ps.viewangles[PITCH]) - ent->client->ps.delta_angles[PITCH];
+			ucmd.angles[ROLL] = ANGLE2SHORT(ent->client->ps.viewangles[ROLL]) - ent->client->ps.delta_angles[ROLL];
+
+			// Force Zombie movement
+			ucmd.forwardmove = 127;
+			ucmd.buttons |= BUTTON_ATTACK;
+
+			// THE SPINAL CORD: Feed the command to the server engine
+			trap->BotUserCommand(ent->s.number, &ucmd);
+
+			// Skip the legacy BotUpdateInput to prevent the -1 AAS crash
+			continue; 
+		}
+
 		BotUpdateInput(botstates[i], time, elapsed_time);
 		trap->BotUserCommand(botstates[i]->client, &botstates[i]->lastucmd);
 	}

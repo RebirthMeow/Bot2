@@ -468,6 +468,7 @@ typedef struct clientSession_s {
 	int			siegeDesiredTeam;
 
 	char		IP[NET_ADDRSTRMAXLEN];
+	qboolean	isBot2;
 } clientSession_t;
 
 // playerstate mGameFlags
@@ -1400,6 +1401,8 @@ void G_CheckBotSpawn( void );
 void G_RemoveQueuedBotBegin( int clientNum );
 qboolean G_BotConnect( int clientNum, qboolean restart );
 void Svcmd_AddBot_f( void );
+void Svcmd_AddBot2_f( void );
+extern qboolean g_isBot2Spawn;
 void Svcmd_BotList_f( void );
 void BotInterbreedEndMatch( void );
 qboolean G_DoesMapSupportGametype(const char *mapname, int gametype);
@@ -1496,8 +1499,14 @@ int BotAIStartFrame( int time );
 #include "g_team.h" // teamplay specific stuff
 
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern	level_locals_t	level;
 extern	gentity_t		g_entities[MAX_GENTITIES];
+#ifdef __cplusplus
+}
+#endif
 
 #define	FOFS(x) offsetof(gentity_t, x)
 
@@ -1523,4 +1532,10 @@ void Svcmd_ToggleAllowVote_f( void );
 void G_RegisterCvars( void );
 void G_UpdateCvars( void );
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern gameImport_t *trap;
+#ifdef __cplusplus
+}
+#endif

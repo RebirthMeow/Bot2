@@ -23,6 +23,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "g_local.h"
+#include "g_navmesh.h"
 #include "bg_saga.h"
 
 extern void Jedi_Cloak( gentity_t *self );

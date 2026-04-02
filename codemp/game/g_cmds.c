@@ -23,6 +23,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "g_local.h"
+#include "g_navmesh.h"
 #include "bg_saga.h"
 
 #include "ui/menudef.h"			// for the voice chats
@@ -3369,6 +3370,34 @@ void Cmd_AddBot_f( gentity_t *ent ) {
 	trap->SendServerCommand( ent-g_entities, va( "print \"%s.\n\"", G_GetStringEdString( "MP_SVGAME", "ONLY_ADD_BOTS_AS_SERVER" ) ) );
 }
 
+extern void G_TestLine(vec3_t start, vec3_t end, int color, int time);
+
+void Cmd_NavInfo_f( gentity_t *ent ) {
+	NavMesh_PrintDebugInfo();
+}
+
+void Cmd_NavTest_f( gentity_t *ent ) {
+	vec3_t forward, end, nextWp;
+	trace_t tr;
+
+	AngleVectors(ent->client->ps.viewangles, forward, NULL, NULL);
+	VectorMA(ent->client->ps.origin, 4096, forward, end);
+	trap->Trace(&tr, ent->client->ps.origin, NULL, NULL, end, ent->s.number, MASK_SOLID, 0, 0, 0);
+
+	trap->SendServerCommand(ent->s.number, va("print \"NavTest Input - Start(Quake): %f %f %f | End(Quake): %f %f %f\n\"", 
+		ent->client->ps.origin[0], ent->client->ps.origin[1], ent->client->ps.origin[2], 
+		tr.endpos[0], tr.endpos[1], tr.endpos[2]));
+
+	if (NavMesh_GetNextWaypoint(ent->s.number, (const float*)ent->client->ps.origin, (const float*)tr.endpos, (float*)nextWp)) {
+		trap->SendServerCommand(ent->s.number, va("print \"NavTest: Path found! Next WP is %f %f %f\n\"", nextWp[0], nextWp[1], nextWp[2]));
+		if (sv_cheats.integer) {
+			G_TestLine(ent->client->ps.origin, nextWp, 0x0000ff, 5000);
+		}
+	} else {
+		trap->SendServerCommand(ent->s.number, "print \"NavTest: Query failed. No path found.\n\"");
+	}
+}
+
 /*
 =================
 ClientCommand
@@ -3412,6 +3441,8 @@ command_t commands[] = {
 //	{ "kylesmash",			TryGrapple,					0 },
 	{ "levelshot",			Cmd_LevelShot_f,			CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "maplist",			Cmd_MapList_f,				CMD_NOINTERMISSION },
+	{ "navinfo",			Cmd_NavInfo_f,				CMD_CHEAT|CMD_ALIVE },
+	{ "navtest",			Cmd_NavTest_f,				CMD_CHEAT|CMD_ALIVE },
 	{ "noclip",				Cmd_Noclip_f,				CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "notarget",			Cmd_Notarget_f,				CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "npc",				Cmd_NPC_f,					CMD_CHEAT|CMD_ALIVE },

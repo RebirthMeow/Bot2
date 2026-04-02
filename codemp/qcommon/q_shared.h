@@ -625,7 +625,13 @@ void Parse2DMatrix (const char **buf_p, int y, int x, float *m);
 void Parse3DMatrix (const char **buf_p, int z, int y, int x, float *m);
 int Com_HexStrToInt( const char *str );
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 int	QDECL Com_sprintf (char *dest, int size, const char *fmt, ...);
+#ifdef __cplusplus
+}
+#endif
 
 char *Com_SkipTokens( char *s, int numTokens, char *sep );
 char *Com_SkipCharset( char *s, char *sep );
@@ -663,7 +669,13 @@ typedef struct qint64_s {
 
 int FloatAsInt( float f );
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 char	* QDECL va(const char *format, ...);
+#ifdef __cplusplus
+}
+#endif
 
 #define TRUNCATE_LENGTH	64
 void Com_TruncateLongString( char *buffer, const char *s );

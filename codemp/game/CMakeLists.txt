@@ -26,6 +26,7 @@ set(MPGameIncludeDirectories
 	"${SharedDir}"
 	"${GSLIncludeDirectory}"
 	"${CMAKE_BINARY_DIR}/shared"
+	"${MPDir}/game/detour"
 	)
 if(WIN32)
 	set(MPGameLibraries "winmm")
@@ -64,6 +65,8 @@ set(MPGameGameFiles
 	"${MPDir}/game/g_mover.c"
 	"${MPDir}/game/g_nav.c"
 	"${MPDir}/game/g_navnew.c"
+	"${MPDir}/game/g_navmesh.cpp"
+	"${MPDir}/game/g_navmesh.h"
 	"${MPDir}/game/g_object.c"
 	"${MPDir}/game/g_saga.c"
 	"${MPDir}/game/g_session.c"
@@ -207,6 +210,27 @@ set(MPGameUiFiles
 	)
 source_group("ui" FILES ${MPGameUiFiles})
 set(MPGameFiles ${MPGameFiles} ${MPGameUiFiles})
+
+set(MPGameDetourFiles
+	"${MPDir}/game/detour/DetourAlloc.cpp"
+	"${MPDir}/game/detour/DetourAssert.cpp"
+	"${MPDir}/game/detour/DetourCommon.cpp"
+	"${MPDir}/game/detour/DetourNavMesh.cpp"
+	"${MPDir}/game/detour/DetourNavMeshBuilder.cpp"
+	"${MPDir}/game/detour/DetourNavMeshQuery.cpp"
+	"${MPDir}/game/detour/DetourNode.cpp"
+	"${MPDir}/game/detour/DetourAlloc.h"
+	"${MPDir}/game/detour/DetourAssert.h"
+	"${MPDir}/game/detour/DetourCommon.h"
+	"${MPDir}/game/detour/DetourMath.h"
+	"${MPDir}/game/detour/DetourNavMesh.h"
+	"${MPDir}/game/detour/DetourNavMeshBuilder.h"
+	"${MPDir}/game/detour/DetourNavMeshQuery.h"
+	"${MPDir}/game/detour/DetourNode.h"
+	"${MPDir}/game/detour/DetourStatus.h"
+	)
+source_group("detour" FILES ${MPGameDetourFiles})
+set(MPGameFiles ${MPGameFiles} ${MPGameDetourFiles})
 
 add_library(${MPGame} SHARED ${MPGameFiles})
 
