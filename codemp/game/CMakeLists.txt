@@ -33,6 +33,8 @@ if(WIN32)
 endif(WIN32)
 set(MPGameDefines ${MPSharedDefines} "_GAME" )
 set(MPGameGameFiles
+	"${MPDir}/game/ai_bot2.c"
+	"${MPDir}/game/ai_bot2.h"
 	"${MPDir}/game/ai_main.c"
 	"${MPDir}/game/ai_util.c"
 	"${MPDir}/game/ai_wpnav.c"

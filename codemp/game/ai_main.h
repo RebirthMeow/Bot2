@@ -418,4 +418,5 @@ extern int nodenum;
 extern int gLevelFlags;
 
 extern float floattime;
+extern bot_state_t *botstates[MAX_CLIENTS];
 #define FloatTime() floattime
