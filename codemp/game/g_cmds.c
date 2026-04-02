@@ -3373,6 +3373,10 @@ void Cmd_AddBot_f( gentity_t *ent ) {
 extern void G_TestLine(vec3_t start, vec3_t end, int color, int time);
 
 void Cmd_NavInfo_f( gentity_t *ent ) {
+	gentity_t *world = &g_entities[ENTITYNUM_WORLD];
+	trap->SendServerCommand(ent->s.number, va("print \"World BSP Bounds: MIN(%f %f %f) MAX(%f %f %f)\n\"", 
+		world->r.mins[0], world->r.mins[1], world->r.mins[2], 
+		world->r.maxs[0], world->r.maxs[1], world->r.maxs[2]));
 	NavMesh_PrintDebugInfo();
 }
 

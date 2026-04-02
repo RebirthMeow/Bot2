@@ -11,6 +11,7 @@
 // Explicitly declare C-linkage symbols
 extern "C" {
 	extern gameImport_t *trap;
+	extern char *va(const char *format, ...);
 }
 
 #include "detour/DetourNavMesh.h"
@@ -46,6 +47,14 @@ struct NavMeshTileHeader {
 	int dataSize;
 };
 
+static inline bool IsValidVector(const float* v) {
+	if (!v) return false;
+	return (v[0] == v[0] && v[1] == v[1] && v[2] == v[2] && 
+			v[0] < 1000000.0f && v[0] > -1000000.0f &&
+			v[1] < 1000000.0f && v[1] > -1000000.0f &&
+			v[2] < 1000000.0f && v[2] > -1000000.0f);
+}
+
 extern "C" void NavMesh_Log(const char* fmt, ...) {
 	va_list argptr;
 	char text[1024];
@@ -63,15 +72,16 @@ extern "C" void NavMesh_Log(const char* fmt, ...) {
 	trap->Print(text);
 }
 
+// FIXED: No Y-axis inversion. Quake X=X, Y=Z, Z=Y.
 static inline void QuakeToRecast(const float* q, float* r) {
 	r[0] = q[0] * QUAKE_TO_METERS;
 	r[1] = q[2] * QUAKE_TO_METERS;
-	r[2] = -q[1] * QUAKE_TO_METERS;
+	r[2] = q[1] * QUAKE_TO_METERS;
 }
 
 static inline void RecastToQuake(const float* r, float* q) {
 	q[0] = r[0] * METERS_TO_QUAKE;
-	q[1] = -r[2] * METERS_TO_QUAKE;
+	q[1] = r[2] * METERS_TO_QUAKE;
 	q[2] = r[1] * METERS_TO_QUAKE;
 }
 
@@ -114,19 +124,15 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 	if (magic == NAVMESHSET_MAGIC) {
 		NavMeshSetHeader* header = (NavMeshSetHeader*)ptr;
 		ptr += sizeof(NavMeshSetHeader);
-		
 		dtStatus status = g_navMesh->init(&header->params);
 		if (dtStatusFailed(status)) {
-			NavMesh_Log("INIT: Tiled init failed (0x%x)\n", status);
 			NavMesh_Free();
 			trap->TrueFree((void**)&buffer);
 			return;
 		}
-
 		for (int i = 0; i < header->numTiles; ++i) {
 			NavMeshTileHeader* tileHeader = (NavMeshTileHeader*)ptr;
 			ptr += sizeof(NavMeshTileHeader);
-			
 			unsigned char* data = (unsigned char*)dtAlloc(tileHeader->dataSize, DT_ALLOC_PERM);
 			if (data) {
 				memcpy(data, ptr, tileHeader->dataSize);
@@ -136,10 +142,8 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 		}
 		NavMesh_Log("SUCCESS: Loaded Tiled Mesh.\n");
 	} else {
-		// Try fallback to solo mesh
-		dtStatus status = g_navMesh->init((unsigned char*)buffer, len, 0); // No tile-free because buffer is shared
+		dtStatus status = g_navMesh->init((unsigned char*)buffer, len, 0); 
 		if (dtStatusFailed(status)) {
-			NavMesh_Log("INIT: Solo init failed (0x%x)\n", status);
 			NavMesh_Free();
 			trap->TrueFree((void**)&buffer);
 			return;
@@ -147,7 +151,6 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 		NavMesh_Log("SUCCESS: Loaded Solo Mesh.\n");
 	}
 
-	// Fix flags
 	for (int i = 0; i < g_navMesh->getMaxTiles(); ++i) {
 		dtMeshTile* tile = const_cast<dtMeshTile*>(static_cast<const dtNavMesh*>(g_navMesh)->getTile(i));
 		if (!tile || !tile->header) continue;
@@ -179,71 +182,50 @@ static qboolean NavMesh_DoQuery(int passEntityNum, const float* startQuake, cons
 	static unsigned char straightPathFlags[MAX_PATH_NODES];
 	static dtPolyRef straightPathRefs[MAX_PATH_NODES];
 
-	NavMesh_Log("NAV: DoQuery Start (Ent %d)\n", passEntityNum);
+	if (!IsValidVector(startQuake) || !IsValidVector(endQuake)) return qfalse;
 
 	dtQueryFilter filter;
 	filter.setIncludeFlags(0xffff);
 	filter.setExcludeFlags(0);
 
-	float startRecast[3], endRecast[3], extent[3] = { 1.0f, 2.0f, 1.0f }; // meters
+	float startRecast[3], endRecast[3], extent[3] = { 2.0f, 4.0f, 2.0f }; // meters
 	QuakeToRecast(startQuake, startRecast);
 	QuakeToRecast(endQuake, endRecast);
 
 	dtPolyRef startRef = 0, endRef = 0;
 	float nearestStart[3], nearestEnd[3];
 
-	NavMesh_Log("NAV: Calling findNearestPoly (Start)\n");
 	g_navQuery->findNearestPoly(startRecast, extent, &filter, &startRef, nearestStart);
-	NavMesh_Log("NAV: Calling findNearestPoly (End)\n");
 	g_navQuery->findNearestPoly(endRecast, extent, &filter, &endRef, nearestEnd);
 
-	if (!startRef || !endRef) {
-		NavMesh_Log("NAV: Poly not found! StartRef:%u EndRef:%u\n", (unsigned int)startRef, (unsigned int)endRef);
-		return qfalse;
-	}
+	if (!startRef || !endRef) return qfalse;
 
 	int pathCount = 0;
-	NavMesh_Log("NAV: Calling findPath\n");
 	dtStatus status = g_navQuery->findPath(startRef, endRef, nearestStart, nearestEnd, &filter, pathRefs, &pathCount, MAX_PATH_NODES);
-	if (dtStatusFailed(status) || pathCount <= 0) {
-		NavMesh_Log("NAV: findPath failed. Status: 0x%x Count: %d\n", status, pathCount);
-		return qfalse;
-	}
+	if (dtStatusFailed(status) || pathCount <= 0) return qfalse;
 
 	int straightPathCount = 0;
-	NavMesh_Log("NAV: Calling findStraightPath\n");
 	status = g_navQuery->findStraightPath(nearestStart, nearestEnd, pathRefs, pathCount, straightPath, straightPathFlags, straightPathRefs, &straightPathCount, MAX_PATH_NODES);
-	if (dtStatusFailed(status) || straightPathCount < 2) {
-		NavMesh_Log("NAV: findStraightPath failed. Status: 0x%x Count: %d\n", status, straightPathCount);
-		return qfalse;
-	}
+	if (dtStatusFailed(status) || straightPathCount < 2) return qfalse;
 
 	vec3_t mins = {-13, -13, -20}, maxs = {13, 13, 30};
 
-	NavMesh_Log("NAV: Entering Trace Loop (Count: %d)\n", straightPathCount);
 	for (int i = 1; i < straightPathCount; ++i) {
 		float wpQuake[3];
 		RecastToQuake(&straightPath[i * 3], wpQuake);
 		trace_t tr;
 		vec3_t traceStart = { startQuake[0], startQuake[1], startQuake[2] + 2.0f };
-		
-		NavMesh_Log("NAV: trap->Trace iteration %d\n", i);
 		trap->Trace(&tr, traceStart, mins, maxs, wpQuake, passEntityNum, MASK_PLAYERSOLID, 0, 0, 0);
-
 		if (tr.fraction < 1.0f) {
-			NavMesh_Log("NAV: Trace Hit! Fraction: %f\n", tr.fraction);
 			if (i == 1) { VectorCopy(wpQuake, outWaypoint); return qtrue; }
 			else { RecastToQuake(&straightPath[(i-1) * 3], outWaypoint); return qtrue; }
 		}
 		float dx = wpQuake[0] - startQuake[0], dy = wpQuake[1] - startQuake[1];
 		if (sqrtf(dx * dx + dy * dy) > 48.0f || i == straightPathCount - 1) {
-			NavMesh_Log("NAV: Waypoint Chosen.\n");
 			VectorCopy(wpQuake, outWaypoint);
 			return qtrue;
 		}
 	}
-	
-	NavMesh_Log("NAV: DoQuery Complete (No Path)\n");
 	return qfalse;
 }
 
@@ -261,5 +243,25 @@ extern "C" int NavMesh_GetNextWaypoint(int passEntityNum, const float* startPoin
 
 extern "C" void NavMesh_PrintDebugInfo(void) {
 	if (!g_navMesh) return;
-	NavMesh_Log("Tiles: %d\n", g_navMesh->getMaxTiles());
+	float bmin[3] = { 99999.0f, 99999.0f, 99999.0f }, bmax[3] = {-99999.0f,-99999.0f,-99999.0f };
+	int polyCount = 0, validTiles = 0;
+	for (int i = 0; i < g_navMesh->getMaxTiles(); ++i) {
+		const dtMeshTile* tile = static_cast<const dtNavMesh*>(g_navMesh)->getTile(i);
+		if (!tile || !tile->header) continue;
+		validTiles++; polyCount += tile->header->polyCount;
+		for (int j=0; j<3; ++j) {
+			if (tile->header->bmin[j] < bmin[j]) bmin[j] = tile->header->bmin[j];
+			if (tile->header->bmax[j] > bmax[j]) bmax[j] = tile->header->bmax[j];
+		}
+	}
+
+	NavMesh_Log("Tiles: %d | Polys: %d | Recast BMIN: %.2f %.2f %.2f | Recast BMAX: %.2f %.2f %.2f\n", 
+		validTiles, polyCount, bmin[0], bmin[1], bmin[2], bmax[0], bmax[1], bmax[2]);
+
+	float quakeMin[3], quakeMax[3];
+	RecastToQuake(bmin, quakeMin);
+	RecastToQuake(bmax, quakeMax);
+
+	NavMesh_Log("Quake Nav Bounds -> MIN: %.2f %.2f %.2f | MAX: %.2f %.2f %.2f\n",
+		quakeMin[0], quakeMin[1], quakeMin[2], quakeMax[0], quakeMax[1], quakeMax[2]);
 }

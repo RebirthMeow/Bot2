@@ -480,6 +480,7 @@ int svcmdcmp( const void *a, const void *b ) {
 
 svcmd_t svcmds[] = {
 	{ "addbot",						Svcmd_AddBot_f,						qfalse },
+	{ "addbot2",					Svcmd_AddBot2_f,					qfalse },
 	{ "addip",						Svcmd_AddIP_f,						qfalse },
 	{ "botlist",					Svcmd_BotList_f,					qfalse },
 	{ "entitylist",					Svcmd_EntityList_f,					qfalse },

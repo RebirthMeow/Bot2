@@ -953,27 +953,13 @@ static void G_AddBot( const char *name, float skill, const char *team, int delay
 	// register the userinfo
 	trap->SetUserinfo( clientNum, userinfo );
 
-	if ( level.gametype >= GT_TEAM )
-	{
-		if ( team && !Q_stricmp( team, "red" ) )
-			bot->client->sess.sessionTeam = TEAM_RED;
-		else if ( team && !Q_stricmp( team, "blue" ) )
-			bot->client->sess.sessionTeam = TEAM_BLUE;
-		else
-			bot->client->sess.sessionTeam = PickTeam( -1 );
-	}
-
-	if ( level.gametype == GT_SIEGE )
-	{
-		bot->client->sess.siegeDesiredTeam = bot->client->sess.sessionTeam;
-		bot->client->sess.sessionTeam = TEAM_SPECTATOR;
-	}
-
-	preTeam = bot->client->sess.sessionTeam;
-
 	// have it connect to the game as a normal client
 	if ( ClientConnect( clientNum, qtrue, qtrue ) )
 		return;
+
+	if ( g_isBot2Spawn ) {
+		bot->client->sess.isBot2 = qtrue;
+	}
 
 	if ( bot->client->sess.sessionTeam != preTeam )
 	{
@@ -1033,6 +1019,19 @@ static void G_AddBot( const char *name, float skill, const char *team, int delay
 
 		AddBotToSpawnQueue( clientNum, delay );
 	}
+}
+
+qboolean g_isBot2Spawn = qfalse;
+
+/*
+===============
+Svcmd_AddBot2_f
+===============
+*/
+void Svcmd_AddBot2_f( void ) {
+	g_isBot2Spawn = qtrue;
+	Svcmd_AddBot_f();
+	g_isBot2Spawn = qfalse;
 }
 
 /*
