@@ -342,7 +342,7 @@ typedef struct clientStatic_s {
 	int			menuFont;
 } clientStatic_t;
 
-#define	CON_TEXTSIZE	0x30000 //was 32768
+#define	CON_TEXTSIZE	0x1000000 //was 32768 (extended for massive history)
 #define	NUM_CON_TIMES	4
 
 typedef union {
