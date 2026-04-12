@@ -241,6 +241,46 @@ extern "C" int NavMesh_GetNextWaypoint(int passEntityNum, const float* startPoin
 	}
 }
 
+extern "C" int NavMesh_GetPath(int passEntityNum, const float* startQuake, const float* endQuake, float* outWaypoints, int maxWaypoints) {
+	if (!g_navMesh || !g_navQuery || !IsValidVector(startQuake) || !IsValidVector(endQuake) || maxWaypoints <= 0) return 0;
+
+	static const int MAX_PATH_NODES = 512;
+	static dtPolyRef pathRefs[MAX_PATH_NODES];
+	static float straightPath[MAX_PATH_NODES * 3];
+	static unsigned char straightPathFlags[MAX_PATH_NODES];
+	static dtPolyRef straightPathRefs[MAX_PATH_NODES];
+
+	dtQueryFilter filter;
+	filter.setIncludeFlags(0xffff);
+	filter.setExcludeFlags(0);
+
+	float startRecast[3], endRecast[3], extent[3] = { 2.0f, 4.0f, 2.0f }; // meters
+	QuakeToRecast(startQuake, startRecast);
+	QuakeToRecast(endQuake, endRecast);
+
+	dtPolyRef startRef = 0, endRef = 0;
+	float nearestStart[3], nearestEnd[3];
+
+	g_navQuery->findNearestPoly(startRecast, extent, &filter, &startRef, nearestStart);
+	g_navQuery->findNearestPoly(endRecast, extent, &filter, &endRef, nearestEnd);
+
+	if (!startRef || !endRef) return 0;
+
+	int pathCount = 0;
+	dtStatus status = g_navQuery->findPath(startRef, endRef, nearestStart, nearestEnd, &filter, pathRefs, &pathCount, MAX_PATH_NODES);
+	if (dtStatusFailed(status) || pathCount <= 0) return 0;
+
+	int straightPathCount = 0;
+	status = g_navQuery->findStraightPath(nearestStart, nearestEnd, pathRefs, pathCount, straightPath, straightPathFlags, straightPathRefs, &straightPathCount, MAX_PATH_NODES);
+	if (dtStatusFailed(status) || straightPathCount < 1) return 0;
+
+	int count = (straightPathCount > maxWaypoints) ? maxWaypoints : straightPathCount;
+	for (int i = 0; i < count; ++i) {
+		RecastToQuake(&straightPath[i * 3], &outWaypoints[i * 3]);
+	}
+	return count;
+}
+
 extern "C" void NavMesh_PrintDebugInfo(void) {
 	if (!g_navMesh) return;
 	float bmin[3] = { 99999.0f, 99999.0f, 99999.0f }, bmax[3] = {-99999.0f,-99999.0f,-99999.0f };

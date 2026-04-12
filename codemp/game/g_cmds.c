@@ -3402,6 +3402,53 @@ void Cmd_NavTest_f( gentity_t *ent ) {
 	}
 }
 
+void Cmd_NavCheck_f( gentity_t *ent ) {
+	if (g_gametype.integer != GT_CTF) {
+		trap->SendServerCommand(ent->s.number, "print \"NavCheck: Only supported in CTF mode.\n\"");
+		return;
+	}
+
+	int myTeam = ent->client->sess.sessionTeam;
+	if (myTeam != TEAM_RED && myTeam != TEAM_BLUE) {
+		trap->SendServerCommand(ent->s.number, "print \"NavCheck: You must be on a team.\n\"");
+		return;
+	}
+
+	char* targetClass = (myTeam == TEAM_RED) ? "team_CTF_blueflag" : "team_CTF_redflag";
+	gentity_t* flagEnt = G_Find(NULL, FOFS(classname), targetClass);
+	if (!flagEnt) {
+		trap->SendServerCommand(ent->s.number, "print \"NavCheck: Could not find enemy flag stand.\n\"");
+		return;
+	}
+
+	static float waypoints[512 * 3];
+	int count = NavMesh_GetPath(ent->s.number, (const float*)ent->client->ps.origin, (const float*)flagEnt->s.origin, waypoints, 512);
+
+	if (count > 0) {
+		trap->SendServerCommand(ent->s.number, va("print \"NavCheck: Path found with %d waypoints.\n\"", count));
+		if (sv_cheats.integer) {
+			for (int i = 0; i < count; i++) {
+				vec3_t wp;
+				VectorCopy(&waypoints[i * 3], wp);
+				// Draw a small vertical line at each waypoint
+				vec3_t up = { wp[0], wp[1], wp[2] + 32 };
+				G_TestLine(wp, up, 0x00ff00, 10000);
+				
+				// Draw path segment
+				if (i > 0) {
+					vec3_t prev;
+					VectorCopy(&waypoints[(i - 1) * 3], prev);
+					G_TestLine(prev, wp, 0xffff00, 10000);
+				} else {
+					G_TestLine(ent->client->ps.origin, wp, 0xffff00, 10000);
+				}
+			}
+		}
+	} else {
+		trap->SendServerCommand(ent->s.number, "print \"NavCheck: No path found to enemy flag stand.\n\"");
+	}
+}
+
 /*
 =================
 ClientCommand
@@ -3447,6 +3494,7 @@ command_t commands[] = {
 	{ "maplist",			Cmd_MapList_f,				CMD_NOINTERMISSION },
 	{ "navinfo",			Cmd_NavInfo_f,				CMD_CHEAT|CMD_ALIVE },
 	{ "navtest",			Cmd_NavTest_f,				CMD_CHEAT|CMD_ALIVE },
+	{ "navcheck",			Cmd_NavCheck_f,				CMD_CHEAT|CMD_ALIVE },
 	{ "noclip",				Cmd_Noclip_f,				CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "notarget",			Cmd_Notarget_f,				CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "npc",				Cmd_NPC_f,					CMD_CHEAT|CMD_ALIVE },
