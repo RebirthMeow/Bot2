@@ -1590,6 +1590,20 @@ static void CG_ClientLevelShot_f( void ) {
 	cg.levelShot = qtrue;
 }
 
+static void CG_DamagePlum_f( void ) {
+	if ( cg_scorePlums.integer >= 2 ) {
+		char attacker[MAX_NETNAME];
+		char victim[MAX_NETNAME];
+		int damage = atoi(CG_Argv(3));
+		int mod = atoi(CG_Argv(4));
+
+		Q_strncpyz(attacker, CG_Argv(1), sizeof(attacker));
+		Q_strncpyz(victim, CG_Argv(2), sizeof(victim));
+
+		trap->Print("^1[Damage]^7 %s ^7hit %s ^7for ^3%i ^7damage. (MOD: %i)\n", attacker, victim, damage, mod);
+	}
+}
+
 typedef struct serverCommand_s {
 	const char	*cmd;
 	void		(*func)(void);
@@ -1605,6 +1619,7 @@ static serverCommand_t	commands[] = {
 	{ "cp",					CG_CenterPrint_f },
 	{ "cps",				CG_CenterPrintSE_f },
 	{ "cs",					CG_ConfigStringModified },
+	{ "dmg",				CG_DamagePlum_f },
 	{ "ircg",				CG_RestoreClientGhoul_f },
 	{ "kg2",				CG_KillGhoul2_f },
 	{ "kls",				CG_KillLoopSounds_f },

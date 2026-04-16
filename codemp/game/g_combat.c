@@ -5387,6 +5387,22 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
 		}
 		targ->health = targ->health - take;
 
+		// --- SCORE PLUMS / DAMAGE NUMBERS ---
+		if (attacker && attacker->inuse && attacker->client && take > 0) {
+			vec3_t pOrg;
+			VectorCopy(targ->r.currentOrigin, pOrg);
+			pOrg[2] += targ->r.maxs[2]; // Spawn slightly above the target's head
+			ScorePlum(attacker, pOrg, -take);
+			
+			// Send damage info to the attacker's console via custom server command 'dmg'
+			// (Changed from -1 to attacker->s.number to prevent reliable command buffer overflow crashes)
+			trap->SendServerCommand(attacker->s.number, va("dmg \"%s\" \"%s\" %i %i", 
+				attacker->client->pers.netname, 
+				(targ->client && targ->inuse) ? targ->client->pers.netname : (targ->classname ? targ->classname : "unknown"), 
+				take, mod));
+		}
+		// ------------------------------------
+
 		if ( (targ->flags&FL_UNDYING) )
 		{//take damage down to 1, but never die
 			if ( targ->health < 1 )

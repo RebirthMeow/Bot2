@@ -649,7 +649,7 @@ void CG_AddRefEntity( localEntity_t *le ) {
 CG_AddScorePlum
 ===================
 */
-#define NUMBER_SIZE		8
+#define NUMBER_SIZE		14
 
 void CG_AddScorePlum( localEntity_t *le ) {
 	refEntity_t	*re;
@@ -664,8 +664,8 @@ void CG_AddScorePlum( localEntity_t *le ) {
 	score = le->radius;
 	if (score < 0) {
 		re->shaderRGBA[0] = 0xff;
-		re->shaderRGBA[1] = 0x11;
-		re->shaderRGBA[2] = 0x11;
+		re->shaderRGBA[1] = 0xff;
+		re->shaderRGBA[2] = 0xff;
 	}
 	else {
 		re->shaderRGBA[0] = 0xff;
@@ -707,9 +707,7 @@ void CG_AddScorePlum( localEntity_t *le ) {
 		return;
 	}
 
-	negative = qfalse;
 	if (score < 0) {
-		negative = qtrue;
 		score = -score;
 	}
 
@@ -718,14 +716,9 @@ void CG_AddScorePlum( localEntity_t *le ) {
 		score = score / 10;
 	}
 
-	if (negative) {
-		digits[numdigits] = 10;
-		numdigits++;
-	}
-
 	for (i = 0; i < numdigits; i++) {
 		VectorMA(origin, (float) (((float) numdigits / 2) - i) * NUMBER_SIZE, vec, re->origin);
-		re->customShader = cgs.media.numberShaders[digits[numdigits-1-i]];
+		re->customShader = cgs.media.chunkyNumberShaders[digits[numdigits-1-i]];
 		trap->R_AddRefEntityToScene( re );
 	}
 }

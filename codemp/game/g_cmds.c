@@ -3447,13 +3447,32 @@ void Cmd_NavCheck_f( gentity_t *ent ) {
 	} else {
 		trap->SendServerCommand(ent->s.number, "print \"NavCheck: No path found to enemy flag stand.\n\"");
 	}
-}
+	}
 
-/*
-=================
-ClientCommand
-=================
-*/
+	void Cmd_NavDraw_f( gentity_t *ent ) {
+	if (!sv_cheats.integer) {
+		trap->SendServerCommand(ent->s.number, "print \"NavDraw: sv_cheats must be 1.\n\"");
+		return;
+	}
+
+	float radius = 1000.0f;
+	if (trap->Argc() > 1) {
+		char arg[MAX_TOKEN_CHARS];
+		trap->Argv(1, arg, sizeof(arg));
+		radius = atof(arg);
+		if (radius <= 0) radius = 1000.0f;
+		if (radius > 5000.0f) radius = 5000.0f; // cap for performance
+	}
+
+	trap->SendServerCommand(ent->s.number, va("print \"NavDraw: Rendering NavMesh within %.0f units...\n\"", radius));
+	NavMesh_DrawDebug(ent->client->ps.origin, radius);
+	}
+
+	/*
+	=================
+	Cmd_SetViewpos_f
+	=================
+	*/
 
 #define CMD_NOINTERMISSION		(1<<0)
 #define CMD_CHEAT				(1<<1)
@@ -3495,6 +3514,7 @@ command_t commands[] = {
 	{ "navinfo",			Cmd_NavInfo_f,				CMD_CHEAT|CMD_ALIVE },
 	{ "navtest",			Cmd_NavTest_f,				CMD_CHEAT|CMD_ALIVE },
 	{ "navcheck",			Cmd_NavCheck_f,				CMD_CHEAT|CMD_ALIVE },
+	{ "navdraw",			Cmd_NavDraw_f,				CMD_CHEAT|CMD_ALIVE },
 	{ "noclip",				Cmd_Noclip_f,				CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "notarget",			Cmd_Notarget_f,				CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "npc",				Cmd_NPC_f,					CMD_CHEAT|CMD_ALIVE },

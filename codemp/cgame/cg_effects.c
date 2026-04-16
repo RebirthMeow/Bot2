@@ -380,7 +380,7 @@ static void CG_CalcBiLerp( vec3_t verts[4], vec3_t subVerts[4], vec2_t uv[4] )
 	VectorMA( temp,			uv[3][1],			subVerts[3], subVerts[3] );
 }
 // bilinear
-//f(p',q') = (1 - y) × {[(1 - x) × f(p,q)] + [x × f(p,q+1)]} + y × {[(1 - x) × f(p+1,q)] + [x × f(p+1,q+1)]}.
+//f(p',q') = (1 - y) ï¿½ {[(1 - x) ï¿½ f(p,q)] + [x ï¿½ f(p,q+1)]} + y ï¿½ {[(1 - x) ï¿½ f(p+1,q)] + [x ï¿½ f(p+1,q+1)]}.
 
 
 static void CG_CalcHeightWidth( vec3_t verts[4], float *height, float *width )
@@ -1008,8 +1008,8 @@ void CG_ScorePlum( int client, vec3_t org, int score ) {
 	vec3_t			angles;
 	static vec3_t lastPos;
 
-	// only visualize for the client that scored
-	if (client != cg.predictedPlayerState.clientNum || cg_scorePlums.integer == 0) {
+	// only visualize for the client that scored (or the client we are spectating)
+	if (!cg.snap || client != cg.snap->ps.clientNum || cg_scorePlums.integer == 0) {
 		return;
 	}
 

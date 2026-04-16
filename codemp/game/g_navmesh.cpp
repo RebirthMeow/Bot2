@@ -12,6 +12,7 @@
 extern "C" {
 	extern gameImport_t *trap;
 	extern char *va(const char *format, ...);
+	extern void G_TestLine(const float* start, const float* end, int color, int time);
 }
 
 #include "detour/DetourNavMesh.h"
@@ -93,10 +94,8 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 
 	Com_sprintf(path, sizeof(path), "maps/%s.navmesh", mapname);
 	
-	if (g_navQuery) dtFreeNavMeshQuery(g_navQuery);
-	g_navQuery = NULL;
-	if (g_navMesh) dtFreeNavMesh(g_navMesh);
-	g_navMesh = NULL;
+	if (g_navQuery) { dtFreeNavMeshQuery(g_navQuery); g_navQuery = NULL; }
+	if (g_navMesh) { dtFreeNavMesh(g_navMesh); g_navMesh = NULL; }
 
 	NavMesh_Log("\n--- NavMesh Init Start ---\n");
 
@@ -112,7 +111,14 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 	trap->FS_Read(buffer, len, f);
 	trap->FS_Close(f);
 
+	if (len < sizeof(int)) {
+		NavMesh_Log("INIT: File too small.\n");
+		trap->TrueFree((void**)&buffer);
+		return;
+	}
+
 	unsigned char* ptr = (unsigned char*)buffer;
+	unsigned char* endPtr = ptr + len;
 	int magic = *(int*)ptr;
 
 	g_navMesh = dtAllocNavMesh();
@@ -122,6 +128,9 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 	}
 
 	if (magic == NAVMESHSET_MAGIC) {
+		if (ptr + sizeof(NavMeshSetHeader) > endPtr) {
+			NavMesh_Free(); trap->TrueFree((void**)&buffer); return;
+		}
 		NavMeshSetHeader* header = (NavMeshSetHeader*)ptr;
 		ptr += sizeof(NavMeshSetHeader);
 		dtStatus status = g_navMesh->init(&header->params);
@@ -131,8 +140,15 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 			return;
 		}
 		for (int i = 0; i < header->numTiles; ++i) {
+			if (ptr + sizeof(NavMeshTileHeader) > endPtr) {
+				NavMesh_Free(); trap->TrueFree((void**)&buffer); return;
+			}
 			NavMeshTileHeader* tileHeader = (NavMeshTileHeader*)ptr;
 			ptr += sizeof(NavMeshTileHeader);
+			
+			if (ptr + tileHeader->dataSize > endPtr) {
+				NavMesh_Free(); trap->TrueFree((void**)&buffer); return;
+			}
 			unsigned char* data = (unsigned char*)dtAlloc(tileHeader->dataSize, DT_ALLOC_PERM);
 			if (data) {
 				memcpy(data, ptr, tileHeader->dataSize);
@@ -142,13 +158,23 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 		}
 		NavMesh_Log("SUCCESS: Loaded Tiled Mesh.\n");
 	} else {
-		dtStatus status = g_navMesh->init((unsigned char*)buffer, len, 0); 
-		if (dtStatusFailed(status)) {
+		// Solo mesh: copy buffer to dtAlloc'd memory because Detour retains the pointer,
+		// and we are going to trap->TrueFree the file buffer at the end of this function!
+		unsigned char* data = (unsigned char*)dtAlloc(len, DT_ALLOC_PERM);
+		if (data) {
+			memcpy(data, buffer, len);
+			dtStatus status = g_navMesh->init(data, len, DT_TILE_FREE_DATA); 
+			if (dtStatusFailed(status)) {
+				NavMesh_Free();
+				trap->TrueFree((void**)&buffer);
+				return;
+			}
+			NavMesh_Log("SUCCESS: Loaded Solo Mesh.\n");
+		} else {
 			NavMesh_Free();
 			trap->TrueFree((void**)&buffer);
 			return;
 		}
-		NavMesh_Log("SUCCESS: Loaded Solo Mesh.\n");
 	}
 
 	for (int i = 0; i < g_navMesh->getMaxTiles(); ++i) {
@@ -169,10 +195,8 @@ extern "C" void NavMesh_InitForMap(const char* mapname) {
 }
 
 extern "C" void NavMesh_Free(void) {
-	if (g_navQuery) dtFreeNavMeshQuery(g_navQuery);
-	g_navQuery = NULL;
-	if (g_navMesh) dtFreeNavMesh(g_navMesh);
-	g_navMesh = NULL;
+	if (g_navQuery) { dtFreeNavMeshQuery(g_navQuery); g_navQuery = NULL; }
+	if (g_navMesh) { dtFreeNavMesh(g_navMesh); g_navMesh = NULL; }
 }
 
 static qboolean NavMesh_DoQuery(int passEntityNum, const float* startQuake, const float* endQuake, float* outWaypoint) {
@@ -231,14 +255,7 @@ static qboolean NavMesh_DoQuery(int passEntityNum, const float* startQuake, cons
 
 extern "C" int NavMesh_GetNextWaypoint(int passEntityNum, const float* startPoint, const float* endPoint, float* outWaypoint) {
 	if (!g_navMesh || !g_navQuery) return 0;
-
-	__try {
-		return (int)NavMesh_DoQuery(passEntityNum, startPoint, endPoint, outWaypoint);
-	}
-	__except(EXCEPTION_EXECUTE_HANDLER) {
-		NavMesh_Log("!!! HARDWARE CRASH IN NavMesh_DoQuery: 0x%08X !!!\n", GetExceptionCode());
-		return 0;
-	}
+	return (int)NavMesh_DoQuery(passEntityNum, startPoint, endPoint, outWaypoint);
 }
 
 extern "C" int NavMesh_GetPath(int passEntityNum, const float* startQuake, const float* endQuake, float* outWaypoints, int maxWaypoints) {
@@ -279,6 +296,83 @@ extern "C" int NavMesh_GetPath(int passEntityNum, const float* startQuake, const
 		RecastToQuake(&straightPath[i * 3], &outWaypoints[i * 3]);
 	}
 	return count;
+}
+
+extern "C" int NavMesh_IsPointOnMesh(const float* point) {
+	if (!g_navMesh || !g_navQuery || !IsValidVector(point)) return 0;
+
+	dtQueryFilter filter;
+	filter.setIncludeFlags(0xffff);
+	filter.setExcludeFlags(0);
+
+	float recastPoint[3];
+	QuakeToRecast(point, recastPoint);
+
+	// Give a generous horizontal extent, but a strict vertical extent so we don't snap to a floor below us
+	float extent[3] = { 2.0f, 2.0f, 2.0f };
+	dtPolyRef ref = 0;
+	float nearestPt[3];
+
+	g_navQuery->findNearestPoly(recastPoint, extent, &filter, &ref, nearestPt);
+
+	if (ref != 0) {
+		// Check how far the found point is vertically. If it's too far, it's not really "on" the mesh at this Z
+		float dy = recastPoint[1] - nearestPt[1]; // Note: Recast uses Y as up
+		if (dy > -2.0f && dy < 2.0f) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+extern "C" void NavMesh_DrawDebug(const float* center, float radius) {
+	if (!g_navMesh || !IsValidVector(center)) return;
+
+	float recastCenter[3];
+	QuakeToRecast(center, recastCenter);
+	float radiusSq = (radius * QUAKE_TO_METERS) * (radius * QUAKE_TO_METERS);
+	
+	int maxLines = 1000;
+	int linesDrawn = 0;
+
+	for (int i = 0; i < g_navMesh->getMaxTiles(); ++i) {
+		const dtMeshTile* tile = static_cast<const dtNavMesh*>(g_navMesh)->getTile(i);
+		if (!tile || !tile->header) continue;
+
+		// Quick distance check to the tile's bounding box center
+		float tcx = (tile->header->bmin[0] + tile->header->bmax[0]) * 0.5f;
+		float tcz = (tile->header->bmin[2] + tile->header->bmax[2]) * 0.5f;
+		float dx = tcx - recastCenter[0];
+		float dz = tcz - recastCenter[2];
+		// Expand check radius by tile size (approx 100 recast units)
+		if (dx*dx + dz*dz > radiusSq + 10000.0f) continue;
+
+		for (int j = 0; j < tile->header->polyCount; ++j) {
+			const dtPoly* p = &tile->polys[j];
+			if (p->getType() == DT_POLYTYPE_OFFMESH_CONNECTION) continue;
+
+			for (int k = 0; k < p->vertCount; ++k) {
+				const float* v0 = &tile->verts[p->verts[k] * 3];
+				const float* v1 = &tile->verts[p->verts[(k + 1) % p->vertCount] * 3];
+				
+				// Simple distance check from the first vertex
+				float vdx = v0[0] - recastCenter[0];
+				float vdz = v0[2] - recastCenter[2];
+				if (vdx*vdx + vdz*vdz > radiusSq) continue;
+
+				float q0[3], q1[3];
+				RecastToQuake(v0, q0);
+				RecastToQuake(v1, q1);
+				
+				q0[2] += 2.0f; // lift slightly above floor
+				q1[2] += 2.0f;
+				
+				G_TestLine(q0, q1, 0x00ffff, 5000); // Cyan color, 5 seconds
+				linesDrawn++;
+				if (linesDrawn >= maxLines) return;
+			}
+		}
+	}
 }
 
 extern "C" void NavMesh_PrintDebugInfo(void) {
