@@ -36,11 +36,12 @@ typedef struct bot2_state_s {
 	vec3_t tele_startPos, tele_predPos, tele_pmovePredPos, tele_midPredPos, tele_prevPos, tele_crossPos;
 	qboolean tele_crossedZ, tele_midAirLogged;
 
-	int diagTimer; char lastFailReason[128];
+	int diagTimer, jumpRetryTimer; char lastFailReason[128];
 } bot2_state_t;
 
 extern bot2_state_t bot2_states[MAX_CLIENTS];
 
+void Bot2_ClearState(int clientNum);
 void Bot2_Think(int clientNum, int time);
 
 // Navigation & Physics Helpers

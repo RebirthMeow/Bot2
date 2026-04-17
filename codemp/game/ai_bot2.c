@@ -23,6 +23,12 @@ static const char* macroNames[] = {
 // ==============================================================================
 bot2_state_t bot2_states[MAX_CLIENTS] = { 0 };
 
+void Bot2_ClearState(int clientNum) {
+	if (clientNum >= 0 && clientNum < MAX_CLIENTS) {
+		memset(&bot2_states[clientNum], 0, sizeof(bot2_state_t));
+	}
+}
+
 // ==============================================================================
 // Environment & Entity Helpers
 // ==============================================================================
@@ -97,6 +103,26 @@ void Bot2_Think(int clientNum, int time) {
 
 		if (!bot2_states[clientNum].tele_deadLogged) {
 			trap->Print("[%s] STATE Transition: Bot Killed / Respawning.\n", ent->client->pers.netname);
+
+			if (bot2_states[clientNum].tele_inAir) {
+				vec3_t cPos; VectorCopy(ent->client->ps.origin, cPos);
+				float dx = cPos[0] - bot2_states[clientNum].tele_startPos[0], dy = cPos[1] - bot2_states[clientNum].tele_startPos[1];
+				float aDist = sqrt((dx * dx) + (dy * dy));
+				float pm_dx = bot2_states[clientNum].tele_pmovePredPos[0] - bot2_states[clientNum].tele_startPos[0], pm_dy = bot2_states[clientNum].tele_pmovePredPos[1] - bot2_states[clientNum].tele_startPos[1];
+				float pMoveDist = sqrt((pm_dx * pm_dx) + (pm_dy * pm_dy));
+				float pm_ZDrop = bot2_states[clientNum].tele_startPos[2] - bot2_states[clientNum].tele_pmovePredPos[2], aZDrop = bot2_states[clientNum].tele_startPos[2] - cPos[2];
+
+				int rawDir = bot2_states[clientNum].strafeDir;
+				int sDir = (rawDir > 0) ? 1 : -1;
+				qboolean isHardStrafe = (abs(rawDir) == 2);
+				const char* keyStr = isHardStrafe ? (sDir == 1 ? "Just D" : "Just A") : (sDir == 1 ? "W+D" : "W+A");
+
+				trap->Print("[%s] FATALITY %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Pred: %.1f) | Act Z: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
+					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq, level.time - bot2_states[clientNum].tele_jumpStartTime, bot2_states[clientNum].tele_takeoffSpd,
+					aDist, pMoveDist, aZDrop, pm_ZDrop, cPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], cPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
+					keyStr);
+			}
+
 			bot2_states[clientNum].tele_deadLogged = 1; bot2_states[clientNum].tele_inAir = 0; bot2_states[clientNum].tele_jumpSeq = 0;
 			bot2_states[clientNum].state = 0; bot2_states[clientNum].tele_hasFlag = 0; bot2_states[clientNum].stuck_timer = level.time;
 			VectorCopy(ent->client->ps.origin, bot2_states[clientNum].stuck_pos);
@@ -222,6 +248,24 @@ void Bot2_Think(int clientNum, int time) {
 
 		// Tactical Self-Kill to refresh Force Pool / Speed for the chase
 		if (thief && ent->client->ps.fd.forcePower < 20 && !(ent->client->ps.fd.forcePowersActive & (1 << FP_SPEED))) {
+			if (bot2_states[clientNum].tele_inAir) {
+				vec3_t cPos; VectorCopy(ent->client->ps.origin, cPos);
+				float dx = cPos[0] - bot2_states[clientNum].tele_startPos[0], dy = cPos[1] - bot2_states[clientNum].tele_startPos[1];
+				float aDist = sqrt((dx * dx) + (dy * dy));
+				float pm_dx = bot2_states[clientNum].tele_pmovePredPos[0] - bot2_states[clientNum].tele_startPos[0], pm_dy = bot2_states[clientNum].tele_pmovePredPos[1] - bot2_states[clientNum].tele_startPos[1];
+				float pMoveDist = sqrt((pm_dx * pm_dx) + (pm_dy * pm_dy));
+				float pm_ZDrop = bot2_states[clientNum].tele_startPos[2] - bot2_states[clientNum].tele_pmovePredPos[2], aZDrop = bot2_states[clientNum].tele_startPos[2] - cPos[2];
+
+				int rawDir = bot2_states[clientNum].strafeDir;
+				int sDir = (rawDir > 0) ? 1 : -1;
+				qboolean isHardStrafe = (abs(rawDir) == 2);
+				const char* keyStr = isHardStrafe ? (sDir == 1 ? "Just D" : "Just A") : (sDir == 1 ? "W+D" : "W+A");
+
+				trap->Print("[%s] FATALITY (TACTICAL) %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Pred: %.1f) | Act Z: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
+					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq, level.time - bot2_states[clientNum].tele_jumpStartTime, bot2_states[clientNum].tele_takeoffSpd,
+					aDist, pMoveDist, aZDrop, pm_ZDrop, cPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], cPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
+					keyStr);
+			}
 			trap->Print("[%s] Tactical self-kill to restore Force Pool for Chase.\n", ent->client->pers.netname);
 			G_Kill(ent);
 			return;
@@ -420,8 +464,8 @@ void Bot2_Think(int clientNum, int time) {
 		}
 	}
 
-	ent->client->ps.fd.forcePowersKnown |= (1 << FP_SPEED) | (1 << FP_ABSORB) | (1 << FP_TEAM_FORCE) | (1 << FP_TEAM_HEAL);
-	ent->client->ps.fd.forcePowerLevel[FP_SPEED] = ent->client->ps.fd.forcePowerLevel[FP_ABSORB] = ent->client->ps.fd.forcePowerLevel[FP_TEAM_FORCE] = ent->client->ps.fd.forcePowerLevel[FP_TEAM_HEAL] = 3;
+	ent->client->ps.fd.forcePowersKnown |= (1 << FP_SPEED) | (1 << FP_ABSORB) | (1 << FP_TEAM_FORCE) | (1 << FP_TEAM_HEAL) | (1 << FP_LEVITATION);
+	ent->client->ps.fd.forcePowerLevel[FP_SPEED] = ent->client->ps.fd.forcePowerLevel[FP_ABSORB] = ent->client->ps.fd.forcePowerLevel[FP_TEAM_FORCE] = ent->client->ps.fd.forcePowerLevel[FP_TEAM_HEAL] = ent->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 3;
 
 	qboolean wantsSpeed = !(bot2_states[clientNum].macroState == MACRO_CAMP_REGEN || bot2_states[clientNum].macroState == MACRO_HUNT_TRIPMINES);
 

@@ -856,6 +856,7 @@ int BotAISetupClient(int client, struct bot_settings_s *settings, qboolean resta
 																			  //rww - G_Alloc bad! B_Alloc good.
 
 	memset(botstates[client], 0, sizeof(bot_state_t));
+	Bot2_ClearState(client);
 
 	bs = botstates[client];
 
@@ -1003,6 +1004,7 @@ int BotAILoadMap( int restart ) {
 		if (botstates[i] && botstates[i]->inuse) {
 			BotResetState( botstates[i] );
 			botstates[i]->setupcount = 4;
+			Bot2_ClearState( i );
 		}
 	}
 

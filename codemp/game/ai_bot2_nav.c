@@ -105,20 +105,8 @@ static int Bot2_PMPointContents(const vec3_t point, int passEntityNum) {
 #include <stdio.h>
 #include <stdarg.h>
 
-void BotBreadcrumb(const char *format, ...) {
-	va_list argptr;
-	char string[1024];
-	FILE *f;
-
-	va_start(argptr, format);
-	vsprintf(string, format, argptr);
-	va_end(argptr);
-
-	f = fopen("bot_breadcrumbs.txt", "a");
-	if (f) {
-		fprintf(f, "%s\n", string);
-		fclose(f);
-	}
+void BotBreadcrumb(const char* format, ...) {
+	return; // Disabled for performance
 }
 
 // ==============================================================================
@@ -129,11 +117,6 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir,
 	if (!g_entities) return qfalse;
 
 	BotBreadcrumb("SimulatePmoveTrajectory START - ClientNum: %d", ent->s.number);
-
-	// ==============================================================================
-	// TRIPWIRE 1: Validates the new DLL is actually loaded by the game engine.
-	// ==============================================================================
-	// G_Error("TRIPWIRE 1: New DLL successfully loaded and SimulatePmove was reached!");
 
 	pmove_t sim_pm;
 	playerState_t dummy_ps;
@@ -176,8 +159,20 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir,
 
 	sim_pm.watertype = 0;
 	sim_pm.waterlevel = 0;
+
+	// Copy the real bounding box
 	VectorCopy(ent->r.mins, sim_pm.mins);
 	VectorCopy(ent->r.maxs, sim_pm.maxs);
+
+	// --- NEW: FATTEN THE PHANTOM BOUNDING BOX ---
+	// Add a 12-unit margin of error to the X and Y axes.
+	// This forces the bot to only accept paths with wide, safe landing zones,
+	// preventing "needle threading" on narrow ramps at high speeds.
+	sim_pm.mins[0] -= 12.0f;
+	sim_pm.mins[1] -= 12.0f;
+	sim_pm.maxs[0] += 12.0f;
+	sim_pm.maxs[1] += 12.0f;
+
 	VectorCopy(ent->modelScale, sim_pm.modelScale);
 
 	sim_pm.baseEnt = (bgEntity_t*)g_entities;
@@ -243,34 +238,104 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir,
 		dummy_cmd.angles[PITCH] = 0;
 		sim_pm.cmd = dummy_cmd;
 
-		// ==============================================================================
-		// TRIPWIRE 2: Proves the setup survives and Pmove is about to be called safely.
-		// ==============================================================================
-		// G_Error("TRIPWIRE 2: Survived setup. About to run Pmove tick %d", i);
+		// Track position before engine math for accurate swept-sphere hazard tracing
+		vec3_t prev_origin;
+		VectorCopy(dummy_ps.origin, prev_origin);
 
 		BotBreadcrumb("Calling Pmove for tick %d...", i);
 		Pmove(&sim_pm);
 		BotBreadcrumb("Pmove tick %d completed.", i);
 
 		// ==============================================================================
-		// TRIPWIRE 3: Proves Pmove survived the internal engine math!
+		// HAZARD GATES (Evaluated before checking for a successful landing)
 		// ==============================================================================
-		// G_Error("TRIPWIRE 3: Pmove survived tick %d!", i);
 
-		if (i > 2 && dummy_ps.groundEntityNum != ENTITYNUM_NONE) {
-			landed = qtrue;
-			BotBreadcrumb("Landed on tick %d.", i);
-			break;
-		}
+		// 1. Did we fall into the abyss?
 		if (start_z - dummy_ps.origin[2] > 800.0f) {
 			BotBreadcrumb("Fell too far on tick %d.", i);
 			break;
 		}
+
+		// 2. Are we swimming in a death pit? (Instant bitmask check for liquid brushes)
+		int currentContents = trap->PointContents(dummy_ps.origin, ent->s.number);
+		if (currentContents & (CONTENTS_LAVA | CONTENTS_SLIME | CONTENTS_WATER)) {
+			BotBreadcrumb("Simulated trajectory hit Water/Lava/Slime on tick %d.", i);
+			break;
+		}
+
+		// 3. Did our arc intersect a trigger_hurt volume?
 		vec3_t p_mins = { -15, -15, -24 }, p_maxs = { 15, 15, 32 };
-		if (CheckForTriggerHurt(ent, dummy_ps.origin, dummy_ps.origin, p_mins, p_maxs)) {
+		if (CheckForTriggerHurt(ent, prev_origin, dummy_ps.origin, p_mins, p_maxs)) {
 			BotBreadcrumb("Hit trigger_hurt on tick %d.", i);
 			break;
 		}
+
+		// LANDING VALIDATION
+		// ==============================================================================
+
+		if (i > 2 && dummy_ps.groundEntityNum != ENTITYNUM_NONE) {
+
+			// Capture the exact coordinate of first contact
+			vec3_t initial_landing_pos;
+			VectorCopy(dummy_ps.origin, initial_landing_pos);
+
+			// Simulate the clumsy landing for 2 ticks
+			// dummy_cmd.forwardmove = 0; // Commented out to simulate slow reaction
+			// dummy_cmd.rightmove = 0;   // Commented out to simulate slow reaction
+			dummy_cmd.upmove = 0;         // CRITICAL: Prevent accidental bunnyhopping
+
+			for (int slideTick = 0; slideTick < 2; slideTick++) {
+				sim_time += sim_pm.pmove_msec;
+				dummy_cmd.serverTime = sim_time;
+				sim_pm.cmd = dummy_cmd;
+
+				Pmove(&sim_pm);
+			}
+
+			// --- POST-SLIDE HAZARD GAUNTLET ---
+			qboolean slide_survived = qtrue;
+
+			// 1. Did the slide push us off the physical ledge?
+			if (dummy_ps.groundEntityNum == ENTITYNUM_NONE) {
+				BotBreadcrumb("Landed, but momentum slid us off the edge on tick %d.", i);
+				slide_survived = qfalse;
+			}
+
+			// 2. Did we slide into a shallow pool of Lava/Slime?
+			if (slide_survived) {
+				int postSlideContents = trap->PointContents(dummy_ps.origin, ent->s.number);
+				if (postSlideContents & (CONTENTS_LAVA | CONTENTS_SLIME | CONTENTS_WATER)) {
+					BotBreadcrumb("Landed safely, but slid into Water/Lava/Slime on tick %d.", i);
+					slide_survived = qfalse;
+				}
+			}
+
+			// 3. Did the slide path drag us through a trigger_hurt?
+			if (slide_survived) {
+				vec3_t p_mins = { -15, -15, -24 }, p_maxs = { 15, 15, 32 };
+				if (CheckForTriggerHurt(ent, initial_landing_pos, dummy_ps.origin, p_mins, p_maxs)) {
+					BotBreadcrumb("Landed safely, but slid into a trigger_hurt on tick %d.", i);
+					slide_survived = qfalse;
+				}
+			}
+
+			// --- THE FINAL VERDICT ---
+			if (slide_survived) {
+				landed = qtrue;
+
+				// Revert the position back to pure arc contact for pristine NavMesh & Telemetry data
+				VectorCopy(initial_landing_pos, dummy_ps.origin);
+
+				BotBreadcrumb("Landed and stabilized safely on tick %d.", i);
+				break;
+			}
+			else {
+				// landed remains qfalse, jump is denied.
+				break;
+			}
+		}
+
+		// Speed bleed-out check
 		float horiz_speed = sqrt(dummy_ps.velocity[0] * dummy_ps.velocity[0] + dummy_ps.velocity[1] * dummy_ps.velocity[1]);
 		if (i > 5 && horiz_speed < 50.0f) {
 			BotBreadcrumb("Lost speed on tick %d.", i);
@@ -290,275 +355,41 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir,
 // Kinematic Math & Jump Arc Prediction
 // ==============================================================================
 qboolean IsSafeToJump(gentity_t* ent, int clientNum, vec3_t start, float current_speed, float vel_yaw, int testDir, float max_run_speed, char* failReason, char* warningString, vec3_t out_land_pos, float* out_land_speed) {
-	trace_t tr; vec3_t p_mins = { -15, -15, -24 }, p_maxs = { 15, 15, 32 }, zeroVec = { 0,0,0 };
-
-#define TRACE_SOL(out, tr_start, tr_end) trap->Trace(&(out), tr_start, p_mins, p_maxs, tr_end, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0)
-#define TRACE_LINE(out, tr_start, tr_end) trap->Trace(&(out), tr_start, zeroVec, zeroVec, tr_end, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0)
-
-	vec3_t slopeEnd; VectorCopy(start, slopeEnd); slopeEnd[2] -= 64.0f;
-	TRACE_LINE(tr, start, slopeEnd);
-	float slopeAngle = (tr.fraction < 1.0f) ? acos(tr.plane.normal[2]) * (180.0f / M_PI) : 0.0f;
-
-	vec3_t sStart, sEnd, fwd;
-	vec3_t vel_angles = { 0, vel_yaw, 0 };
-	AngleVectors(vel_angles, fwd, NULL, NULL);
-	VectorMA(start, 32.0f, fwd, sStart); VectorCopy(sStart, sEnd); sEnd[2] -= 64.0f;
-	trace_t trAhead;
-	trap->Trace(&trAhead, sStart, p_mins, p_maxs, sEnd, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0);
-	if (trAhead.fraction < 1.0f && trAhead.plane.normal[2] > 0.7f) {
-		float sd = trAhead.endpos[2] - start[2], ha = acos(trAhead.plane.normal[2]) * (180.0f / M_PI);
-		if (ha < 5.0f && (sd > 4.0f || (sd < -4.0f && sd > -32.0f))) slopeAngle = 45.0f;
-	}
-
-	float pAir = 0.925f, rDot = 0.0f;
-	if (slopeAngle > 5.0f && tr.fraction < 1.0f) {
-		vec3_t flat = { cos(vel_yaw * (M_PI / 180.0f)), sin(vel_yaw * (M_PI / 180.0f)), 0 };
-		rDot = (flat[0] * tr.plane.normal[0]) + (flat[1] * tr.plane.normal[1]);
-	}
-
-	int actualDir = (testDir > 0) ? 1 : -1;
-	qboolean isHardStrafe = (abs(testDir) == 2);
-
-	float jumpZ = 400.0f * pAir, jumpC = 112500.0f * pow(max_run_speed / 250.0f, 2);
-	float pLandSpd = sqrt((current_speed * current_speed) + jumpC);
-	float avgSpd = max((current_speed + pLandSpd) / 2.0f, max_run_speed);
-
-	float curveBias = 1.0f + max(0.0f, (800.0f - current_speed) * 0.000045f);
-	float dSec = max(26.5f - ((current_speed - max_run_speed) * 0.007f), 5.0f);
-
-	if (isHardStrafe) {
-		dSec *= 1.75f;
-		avgSpd *= 0.85f;
-	}
-
-	float baseDist = avgSpd * pAir * curveBias;
-
-	// Probe the arc in 4 segments
-	vec3_t segStart; VectorCopy(start, segStart);
-	segStart[2] += 18.0f;
-
-	for (int i = 1; i <= 4; i++) {
-		float fr = i * 0.20f;
-		float pd = baseDist * fr; // Arc Length
-		float segTime = pd / avgSpd;
-		float segTurnDeg = dSec * segTime * actualDir;
-		float segTurnRad = fabs(segTurnDeg) * (M_PI / 180.0f);
-
-		// Compress Arc Length into Straight-Line Chord!
-		float segChord = pd;
-		if (segTurnRad > 0.01f) segChord = 2.0f * (pd / segTurnRad) * sin(segTurnRad / 2.0f);
-
-		// The angle of the chord is exactly half the total turn angle
-		float segChordAngle = (vel_yaw - (segTurnDeg * 0.5f)) * (M_PI / 180.0f);
-
-		vec3_t p = { start[0] + cos(segChordAngle) * segChord, start[1] + sin(segChordAngle) * segChord, start[2] + 18.0f + (jumpZ * segTime) - (400.0f * segTime * segTime) };
-
-		TRACE_SOL(tr, segStart, p);
-		if (tr.fraction < 1.0f) {
-			if (tr.plane.normal[2] < 0.7f) {
-				if (failReason) Com_sprintf(failReason, 128, "Clipped: fr=%.2f, nZ=%.2f, startSolid=%d", tr.fraction, tr.plane.normal[2], tr.startsolid);
-				return qfalse;
-			}
-			else { VectorCopy(tr.endpos, segStart); break; }
-		}
-		else { VectorCopy(p, segStart); }
-	}
-
-	// Base Prediction (Flat Ground)
-	float tBase = baseDist / avgSpd;
-	float bTurnDeg = dSec * tBase * actualDir;
-	float bTurnRad = fabs(bTurnDeg) * (M_PI / 180.0f);
-
-	float bChord = baseDist;
-	if (bTurnRad > 0.01f) bChord = 2.0f * (baseDist / bTurnRad) * sin(bTurnRad / 2.0f);
-	float bChordAngle = (vel_yaw - (bTurnDeg * 0.5f)) * (M_PI / 180.0f);
-
-	vec3_t testP;
-	testP[0] = start[0] + cos(bChordAngle) * bChord;
-	testP[1] = start[1] + sin(bChordAngle) * bChord;
-	testP[2] = start[2] + 18.0f + (jumpZ * tBase) - (400.0f * tBase * tBase);
-	TRACE_SOL(tr, segStart, testP);
-
-	vec3_t dnS, dnE; VectorCopy(tr.endpos, dnS); VectorCopy(dnS, dnE); dnE[2] -= 2048.0f;
-	TRACE_SOL(tr, dnS, dnE);
-
-	float drop = start[2] - tr.endpos[2], tdDist = baseDist, eDrop = 0.0f, eAir = pAir;
-	float dAvgSpd = avgSpd;
-
-	if (fabs(drop) > 8.0f) {
-		eDrop = max(min(drop, 800.0f), -((pow(jumpZ, 2) / 1600.0f) - 1.0f));
-		eAir = (pAir / 2.0f) + sqrt(((pow(jumpZ, 2) / 1600.0f) + eDrop) / 400.0f);
-		dAvgSpd = max((current_speed + sqrt(pow(current_speed, 2) + (jumpC * (eAir / pAir)))) / 2.0f, max_run_speed);
-		tdDist = (dAvgSpd * eAir) * curveBias;
-	}
-
-	float tF = eAir;
-
-	// ANALYTICAL SLOPE INTERSECTION MATH
-	if (slopeAngle > 5.0f && rDot < -0.1f) {
-		float slopeRad = slopeAngle * (M_PI / 180.0f);
-		float floorRiseRate = dAvgSpd * (fabs(rDot) / cos(slopeRad));
-
-		if (jumpZ > floorRiseRate) {
-			tF = (jumpZ - floorRiseRate) / 400.0f;
-			tdDist = (dAvgSpd * tF) * curveBias;
-		}
-	}
-
-	// Final Projected Chord Calculation
-	float fTurnDeg = dSec * tF * actualDir;
-	float fTurnRad = fabs(fTurnDeg) * (M_PI / 180.0f);
-	float fChord = tdDist;
-	if (fTurnRad > 0.01f) fChord = 2.0f * (tdDist / fTurnRad) * sin(fTurnRad / 2.0f);
-	float fChordAngle = (vel_yaw - (fTurnDeg * 0.5f)) * (M_PI / 180.0f);
-
-	float dxF = cos(fChordAngle);
-	float dyF = sin(fChordAngle);
-
-	testP[0] = start[0] + dxF * fChord;
-	testP[1] = start[1] + dyF * fChord;
-	testP[2] = start[2] + 18.0f + (jumpZ * tF) - (400.0f * tF * tF);
-
-	TRACE_SOL(tr, segStart, testP);
-	if (tr.fraction < 1.0f && tr.plane.normal[2] < 0.7f) {
-		if (failReason) Com_sprintf(failReason, 128, "Final Spot Clipped: fr=%.2f, nZ=%.2f, startSolid=%d", tr.fraction, tr.plane.normal[2], tr.startsolid);
-		return qfalse;
-	}
-
-	// ==========================================
-	// 1. TRUE LANDING Z (Standard Box)
-	// ==========================================
-	VectorCopy(tr.endpos, dnS);
-	VectorCopy(dnS, dnE); dnE[2] -= 2048.0f;
-
-	trace_t trueTr;
-	trap->Trace(&trueTr, dnS, p_mins, p_maxs, dnE, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0);
-
-	float flrZ = trueTr.endpos[2];
-	float fDrop = start[2] - flrZ;
-	float pLandSlope = (trueTr.fraction < 1.0f) ? acos(trueTr.plane.normal[2]) * (180.0f / M_PI) : 0.0f;
-
-	if (trueTr.fraction == 1.0f || fDrop > 450.0f || CheckForTriggerHurt(ent, dnS, trueTr.endpos, p_mins, p_maxs)) {
-		if (failReason) Q_strncpyz(failReason, "Center landing spot is a pit or trigger_hurt", 128);
-		return qfalse;
-	}
-
-	if (!NavMesh_IsPointOnMesh(trueTr.endpos)) {
-		if (failReason) Q_strncpyz(failReason, "Landing spot is solid, but NOT on the NavMesh", 128);
-		return qfalse;
-	}
-
-	// ==========================================
-	// 1.5 KINEMATIC REALITY CHECK (The Hallucination Fix)
-	// ==========================================
-	float true_tF = (pAir / 2.0f) + sqrt(((pow(jumpZ, 2) / 1600.0f) + max(0.0f, fDrop)) / 400.0f);
-	float true_dist = (dAvgSpd * true_tF) * curveBias;
-
-	// tdDist is the Arc Length. We compare it to the max physical Arc Length (true_dist)
-	if (tdDist > true_dist + 32.0f) {
-		if (failReason) Com_sprintf(failReason, 128, "Kinematic Fall Short: Target at %.0f dist, hit Z at %.0f", tdDist, true_dist);
-		return qfalse;
-	}
-
-	if (!(slopeAngle > 5.0f && rDot < -0.1f)) {
-		tF = true_tF;
-
-		// Recalculate the final chord displacement for telemetry so it perfectly aligns with reality!
-		float realTurnDeg = dSec * tF * actualDir;
-		float realTurnRad = fabs(realTurnDeg) * (M_PI / 180.0f);
-		fChord = true_dist;
-		if (realTurnRad > 0.01f) fChord = 2.0f * (true_dist / realTurnRad) * sin(realTurnRad / 2.0f);
-		fChordAngle = (vel_yaw - (realTurnDeg * 0.5f)) * (M_PI / 180.0f);
-		dxF = cos(fChordAngle);
-		dyF = sin(fChordAngle);
-	}
-
-	// ==========================================
-	// 2. TRUE LATERAL DRIFT PROBES (Swept Volume)
-	// ==========================================
-	float perpX = -dyF;
-	float perpY = dxF;
-	float driftMargin = 64.0f;
-	float stepSize = 32.0f;
-
-	for (float offset = stepSize; offset <= driftMargin; offset += stepSize) {
-		vec3_t l_dnS, r_dnS, l_dnE, r_dnE;
-		VectorCopy(dnS, l_dnS);
-		VectorCopy(dnS, r_dnS);
-
-		l_dnS[0] += perpX * offset; l_dnS[1] += perpY * offset;
-		r_dnS[0] -= perpX * offset; r_dnS[1] -= perpY * offset;
-
-		VectorCopy(l_dnS, l_dnE); l_dnE[2] -= 2048.0f;
-		VectorCopy(r_dnS, r_dnE); r_dnE[2] -= 2048.0f;
-
-		trace_t trL, trR;
-		trap->Trace(&trL, l_dnS, p_mins, p_maxs, l_dnE, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0);
-		trap->Trace(&trR, r_dnS, p_mins, p_maxs, r_dnE, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0);
-
-		float dropL = start[2] - trL.endpos[2];
-		float dropR = start[2] - trR.endpos[2];
-
-		if (trL.fraction == 1.0f || dropL > 450.0f || CheckForTriggerHurt(ent, l_dnS, trL.endpos, p_mins, p_maxs)) {
-			if (failReason) Com_sprintf(failReason, 128, "Lateral Sweep Danger: Left pit/hurt at offset %.0f", offset);
-			return qfalse;
-		}
-		if (trR.fraction == 1.0f || dropR > 450.0f || CheckForTriggerHurt(ent, r_dnS, trR.endpos, p_mins, p_maxs)) {
-			if (failReason) Com_sprintf(failReason, 128, "Lateral Sweep Danger: Right pit/hurt at offset %.0f", offset);
-			return qfalse;
-		}
-	}
-
-	// ==========================================
-	// 3. FORWARD OVERSHOOT SWEEP (Swept Volume)
-	// ==========================================
-	for (float fwdOffset = 32.0f; fwdOffset <= 64.0f; fwdOffset += 32.0f) {
-		vec3_t f_dnS, f_dnE;
-		VectorCopy(dnS, f_dnS);
-		f_dnS[0] += dxF * fwdOffset; f_dnS[1] += dyF * fwdOffset;
-
-		VectorCopy(f_dnS, f_dnE); f_dnE[2] -= 2048.0f;
-
-		trace_t trF;
-		trap->Trace(&trF, f_dnS, p_mins, p_maxs, f_dnE, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0);
-		float dropF = start[2] - trF.endpos[2];
-
-		if (trF.fraction == 1.0f || dropF > 450.0f || CheckForTriggerHurt(ent, f_dnS, trF.endpos, p_mins, p_maxs)) {
-			if (failReason) Com_sprintf(failReason, 128, "Overshoot Sweep Danger: Front pit/hurt at +%.0f", fwdOffset);
-			return qfalse;
-		}
-	}
-
-	if (out_land_pos) VectorCopy(tr.endpos, out_land_pos); if (out_land_speed) *out_land_speed = avgSpd;
-
-	bot2_states[clientNum].tele_jumpSeq++; bot2_states[clientNum].tele_jumpStartTime = level.time;
-	bot2_states[clientNum].tele_groundSlope = slopeAngle; bot2_states[clientNum].tele_crossedZ = qfalse;
-	bot2_states[clientNum].tele_predDir = testDir; bot2_states[clientNum].tele_midAirTime = level.time + (int)((eAir * 1000.0f) * 0.5f);
-	bot2_states[clientNum].tele_midAirLogged = qfalse; bot2_states[clientNum].tele_rampDot = rDot;
-	bot2_states[clientNum].tele_secant = dSec; bot2_states[clientNum].tele_effDrop = eDrop;
-	bot2_states[clientNum].tele_predLandSlope = pLandSlope; bot2_states[clientNum].tele_takeoffYaw = vel_yaw;
-	bot2_states[clientNum].tele_predAirTime = (int)(tF * 1000.0f);
-
-	VectorCopy(ent->client->ps.origin, bot2_states[clientNum].tele_prevPos); VectorCopy(ent->client->ps.origin, bot2_states[clientNum].tele_startPos);
-
-	// TELEMETRY IS NOW DRIVEN BY CHORD DISTANCE (Straight Line Displacement)
-	bot2_states[clientNum].tele_predPos[0] = start[0] + (dxF * fChord);
-	bot2_states[clientNum].tele_predPos[1] = start[1] + (dyF * fChord);
-	bot2_states[clientNum].tele_predPos[2] = flrZ;
-	bot2_states[clientNum].tele_predDist = fChord;
-	bot2_states[clientNum].tele_takeoffSpd = current_speed; bot2_states[clientNum].tele_inAir = 1;
-
-	// --- PHANTOM PMOVE SIMULATION ---
 	vec3_t pmove_land;
-	if (SimulatePmoveTrajectory(ent, vel_yaw, testDir, max_run_speed, pmove_land)) {
-		VectorCopy(pmove_land, bot2_states[clientNum].tele_pmovePredPos);
-	}
-	else {
-		VectorClear(bot2_states[clientNum].tele_pmovePredPos);
+
+	if (!SimulatePmoveTrajectory(ent, vel_yaw, testDir, max_run_speed, pmove_land)) {
+		if (failReason) Q_strncpyz(failReason, "Phantom Pmove: Trajectory aborted (hit wall, hurt, or pit)", 128);
+		return qfalse;
 	}
 
-#undef TRACE_SOL
-#undef TRACE_LINE
+	// Validate landing spot
+	if (!NavMesh_IsPointOnMesh(pmove_land)) {
+		if (failReason) Q_strncpyz(failReason, "Phantom Pmove: Landing spot is NOT on the NavMesh", 128);
+		return qfalse;
+	}
+
+	if (out_land_pos) VectorCopy(pmove_land, out_land_pos);
+	if (out_land_speed) *out_land_speed = max_run_speed;
+
+	bot2_states[clientNum].tele_jumpSeq++;
+	bot2_states[clientNum].tele_jumpStartTime = level.time;
+	bot2_states[clientNum].tele_crossedZ = qfalse;
+	bot2_states[clientNum].tele_predDir = testDir;
+	bot2_states[clientNum].tele_takeoffYaw = vel_yaw;
+
+	VectorCopy(ent->client->ps.origin, bot2_states[clientNum].tele_prevPos);
+	VectorCopy(ent->client->ps.origin, bot2_states[clientNum].tele_startPos);
+
+	bot2_states[clientNum].tele_takeoffSpd = current_speed;
+	bot2_states[clientNum].tele_inAir = 1;
+
+	// Populate telemetry with PMove's ground truth so the logs keep working
+	VectorCopy(pmove_land, bot2_states[clientNum].tele_predPos);
+	VectorCopy(pmove_land, bot2_states[clientNum].tele_pmovePredPos);
+
+	float dx = pmove_land[0] - start[0], dy = pmove_land[1] - start[1];
+	bot2_states[clientNum].tele_predDist = sqrt((dx * dx) + (dy * dy));
+
 	return qtrue;
 }
 
@@ -691,41 +522,44 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 				int pDir = EvaluateStrafeDir(ent, base_target_yaw);
 				int tD[] = { pDir, pDir * 2, pDir * -1, pDir * -2 };
 
-				for (int d = 0; d < 4; d++) {
-					vec3_t predLandPos;
+				if (level.time - bot2_states[clientNum].jumpRetryTimer > 250) {
+					for (int d = 0; d < 4; d++) {
+						vec3_t predLandPos;
 
-					if (IsSafeToJump(ent, clientNum, ent->client->ps.origin, current_speed, vel_yaw, tD[d], max_run_speed, bot2_states[clientNum].lastFailReason, NULL, predLandPos, NULL)) {
-						qboolean goodJump = qtrue;
-						float jumpDist = Distance(ent->client->ps.origin, predLandPos);
+						if (IsSafeToJump(ent, clientNum, ent->client->ps.origin, current_speed, vel_yaw, tD[d], max_run_speed, bot2_states[clientNum].lastFailReason, NULL, predLandPos, NULL)) {
+							qboolean goodJump = qtrue;
+							float jumpDist = Distance(ent->client->ps.origin, predLandPos);
 
-						if (jumpDist > distToWp) {
-							if (validPath && Distance(nextWp, targetOrigin) < 32.0f) {
-								goodJump = qfalse;
-								Q_strncpyz(bot2_states[clientNum].lastFailReason, "Pathing: Overshooting final flagstand", sizeof(bot2_states[clientNum].lastFailReason));
-							}
-							else if (validPath) {
-								vec3_t vecOvershoot, vecIdeal;
-								VectorSubtract(predLandPos, nextWp, vecOvershoot);
-								VectorNormalize(vecOvershoot);
-								VectorSubtract(targetOrigin, nextWp, vecIdeal);
-								VectorNormalize(vecIdeal);
-
-								if (DotProduct(vecOvershoot, vecIdeal) < 0.0f) {
+							if (jumpDist > distToWp) {
+								if (validPath && Distance(nextWp, targetOrigin) < 32.0f) {
 									goodJump = qfalse;
-									Q_strncpyz(bot2_states[clientNum].lastFailReason, "Pathing: Overshoot turn too sharp (Dot < 0.0)", sizeof(bot2_states[clientNum].lastFailReason));
+									Q_strncpyz(bot2_states[clientNum].lastFailReason, "Pathing: Overshooting final flagstand", sizeof(bot2_states[clientNum].lastFailReason));
+								}
+								else if (validPath) {
+									vec3_t vecOvershoot, vecIdeal;
+									VectorSubtract(predLandPos, nextWp, vecOvershoot);
+									VectorNormalize(vecOvershoot);
+									VectorSubtract(targetOrigin, nextWp, vecIdeal);
+									VectorNormalize(vecIdeal);
+
+									if (DotProduct(vecOvershoot, vecIdeal) < 0.0f) {
+										goodJump = qfalse;
+										Q_strncpyz(bot2_states[clientNum].lastFailReason, "Pathing: Overshoot turn too sharp (Dot < 0.0)", sizeof(bot2_states[clientNum].lastFailReason));
+									}
 								}
 							}
-						}
 
-						if (goodJump) {
-							bot2_states[clientNum].state = 2; bot2_states[clientNum].stateTimer = level.time; bot2_states[clientNum].targetYaw = base_target_yaw;
-							bot2_states[clientNum].strafeDir = tD[d];
-							ucmd->upmove = 127; jExec = qtrue;
-							bot2_states[clientNum].lastFailReason[0] = '\0';
-							trap->Print("[%s] STATE Transition: Walking -> Executing Running Jump (State 2)\n", ent->client->pers.netname);
-							break;
+							if (goodJump) {
+								bot2_states[clientNum].state = 2; bot2_states[clientNum].stateTimer = level.time; bot2_states[clientNum].targetYaw = base_target_yaw;
+								bot2_states[clientNum].strafeDir = tD[d];
+								ucmd->upmove = 127; jExec = qtrue;
+								bot2_states[clientNum].lastFailReason[0] = '\0';
+								trap->Print("[%s] STATE Transition: Walking -> Executing Running Jump (State 2)\n", ent->client->pers.netname);
+								break;
+							}
 						}
 					}
+					if (!jExec) bot2_states[clientNum].jumpRetryTimer = level.time;
 				}
 			}
 
@@ -813,12 +647,10 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 				float yawD = vel_yaw - bot2_states[clientNum].tele_takeoffYaw;
 				while (yawD > 180.0f) yawD -= 360.0f; while (yawD < -180.0f) yawD += 360.0f;
 
-				trap->Print("[%s] Z-CROSS %d | Act T: %dms (Pred: %dms) | Act D: %.1f (Math: %.1f, PM: %.1f) | Math Err: %+.1f, %+.1f | PM Err: %+.1f, %+.1f | Keys: %s\n",
+				trap->Print("[%s] Z-CROSS %d | Act T: %dms | Act D: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
 					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq,
 					level.time - bot2_states[clientNum].tele_jumpStartTime,
-					bot2_states[clientNum].tele_predAirTime,
-					aDist, bot2_states[clientNum].tele_predDist, pMoveDist,
-					cPos[0] - bot2_states[clientNum].tele_predPos[0], cPos[1] - bot2_states[clientNum].tele_predPos[1],
+					aDist, pMoveDist,
 					cPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], cPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
 					keyStr
 				);
@@ -846,18 +678,13 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 				float pm_ZDrop = bot2_states[clientNum].tele_startPos[2] - bot2_states[clientNum].tele_pmovePredPos[2];
 
 				float aZDrop = bot2_states[clientNum].tele_startPos[2] - aLPos[2];
-				float pZDrop = bot2_states[clientNum].tele_startPos[2] - bot2_states[clientNum].tele_predPos[2];
 
-				float yawD = vel_yaw - bot2_states[clientNum].tele_takeoffYaw;
-				while (yawD > 180.0f) yawD -= 360.0f; while (yawD < -180.0f) yawD += 360.0f;
-
-				trap->Print("[%s] JUMP %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Math: %.1f, PM: %.1f) | Act Z: %.1f (Math: %.1f, PM: %.1f) | Math Err: %+.1f, %+.1f | PM Err: %+.1f, %+.1f | Keys: %s\n",
+				trap->Print("[%s] JUMP %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Pred: %.1f) | Act Z: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
 					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq,
 					level.time - bot2_states[clientNum].tele_jumpStartTime,
 					bot2_states[clientNum].tele_takeoffSpd,
-					aDist, bot2_states[clientNum].tele_predDist, pMoveDist,
-					aZDrop, pZDrop, pm_ZDrop,
-					aLPos[0] - bot2_states[clientNum].tele_predPos[0], aLPos[1] - bot2_states[clientNum].tele_predPos[1],
+					aDist, pMoveDist,
+					aZDrop, pm_ZDrop,
 					aLPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], aLPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
 					keyStr
 				);
@@ -868,13 +695,10 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 
 			if (wantsSpeed) {
 				if (current_speed < (max_run_speed - 30.0f)) {
-					if (bot2_states[clientNum].tele_jumpSeq > 0) {
-						bot2_states[clientNum].lastFailReason[0] = '\0';
-						cJmp = qtrue;
-					}
-					else {
-						Q_strncpyz(bot2_states[clientNum].lastFailReason, "Landed from drop; walking to build speed", sizeof(bot2_states[clientNum].lastFailReason));
-					}
+					// FIX: Do not blindly force cJmp = qtrue here! 
+					// If we lost speed (e.g., hit a wall), drop back to State 0 to safely walk and rebuild momentum.
+					Q_strncpyz(bot2_states[clientNum].lastFailReason, "Lost momentum; dropping to walk to rebuild speed", sizeof(bot2_states[clientNum].lastFailReason));
+					// cJmp remains false, naturally dropping the bot to State 0.
 				}
 				else if (distToTarget <= 500.0f) {
 					Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Target too close (< 500 units)", sizeof(bot2_states[clientNum].lastFailReason));
@@ -884,37 +708,41 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 				}
 				else {
 					int tD[] = { nDir, nDir * 2, nDir * -1, nDir * -2 };
-					for (int d = 0; d < 4; d++) {
-						vec3_t predLandPos;
-						if (IsSafeToJump(ent, clientNum, ent->client->ps.origin, current_speed, vel_yaw, tD[d], max_run_speed, bot2_states[clientNum].lastFailReason, NULL, predLandPos, NULL)) {
 
-							qboolean goodJump = qtrue;
-							float jumpDist = Distance(ent->client->ps.origin, predLandPos);
+					if (level.time - bot2_states[clientNum].jumpRetryTimer > 250) {
+						for (int d = 0; d < 4; d++) {
+							vec3_t predLandPos;
+							if (IsSafeToJump(ent, clientNum, ent->client->ps.origin, current_speed, vel_yaw, tD[d], max_run_speed, bot2_states[clientNum].lastFailReason, NULL, predLandPos, NULL)) {
 
-							if (jumpDist > distToWp) {
-								if (validPath && Distance(nextWp, targetOrigin) < 32.0f) {
-									goodJump = qfalse;
-									Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Pathing - Overshooting flagstand", sizeof(bot2_states[clientNum].lastFailReason));
-								}
-								else if (validPath) {
-									vec3_t vecOvershoot, vecIdeal;
-									VectorSubtract(predLandPos, nextWp, vecOvershoot);
-									VectorNormalize(vecOvershoot);
-									VectorSubtract(targetOrigin, nextWp, vecIdeal);
-									VectorNormalize(vecIdeal);
+								qboolean goodJump = qtrue;
+								float jumpDist = Distance(ent->client->ps.origin, predLandPos);
 
-									if (DotProduct(vecOvershoot, vecIdeal) < 0.0f) {
+								if (jumpDist > distToWp) {
+									if (validPath && Distance(nextWp, targetOrigin) < 32.0f) {
 										goodJump = qfalse;
-										Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Pathing - Overshoot turn too sharp", sizeof(bot2_states[clientNum].lastFailReason));
+										Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Pathing - Overshooting flagstand", sizeof(bot2_states[clientNum].lastFailReason));
+									}
+									else if (validPath) {
+										vec3_t vecOvershoot, vecIdeal;
+										VectorSubtract(predLandPos, nextWp, vecOvershoot);
+										VectorNormalize(vecOvershoot);
+										VectorSubtract(targetOrigin, nextWp, vecIdeal);
+										VectorNormalize(vecIdeal);
+
+										if (DotProduct(vecOvershoot, vecIdeal) < 0.0f) {
+											goodJump = qfalse;
+											Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Pathing - Overshoot turn too sharp", sizeof(bot2_states[clientNum].lastFailReason));
+										}
 									}
 								}
-							}
 
-							if (goodJump) {
-								bot2_states[clientNum].lastFailReason[0] = '\0';
-								cJmp = qtrue; nDir = tD[d]; break;
+								if (goodJump) {
+									bot2_states[clientNum].lastFailReason[0] = '\0';
+									cJmp = qtrue; nDir = tD[d]; break;
+								}
 							}
 						}
+						if (!cJmp) bot2_states[clientNum].jumpRetryTimer = level.time;
 					}
 				}
 
@@ -935,7 +763,27 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 
 	if ((dx * dx) + (dy * dy) + (dz * dz) > 625.0f) { VectorCopy(ent->client->ps.origin, bot2_states[clientNum].stuck_pos); bot2_states[clientNum].stuck_timer = level.time; }
 	else if (distToTarget > 150.0f) {
-		if (level.time - bot2_states[clientNum].stuck_timer > 5000) { G_Kill(ent); return; }
+		if (level.time - bot2_states[clientNum].stuck_timer > 5000) {
+			if (bot2_states[clientNum].tele_inAir) {
+				vec3_t cPos; VectorCopy(ent->client->ps.origin, cPos);
+				float dx = cPos[0] - bot2_states[clientNum].tele_startPos[0], dy = cPos[1] - bot2_states[clientNum].tele_startPos[1];
+				float aDist = sqrt((dx * dx) + (dy * dy));
+				float pm_dx = bot2_states[clientNum].tele_pmovePredPos[0] - bot2_states[clientNum].tele_startPos[0], pm_dy = bot2_states[clientNum].tele_pmovePredPos[1] - bot2_states[clientNum].tele_startPos[1];
+				float pMoveDist = sqrt((pm_dx * pm_dx) + (pm_dy * pm_dy));
+				float pm_ZDrop = bot2_states[clientNum].tele_startPos[2] - bot2_states[clientNum].tele_pmovePredPos[2], aZDrop = bot2_states[clientNum].tele_startPos[2] - cPos[2];
+
+				int rawDir = bot2_states[clientNum].strafeDir;
+				int sDir = (rawDir > 0) ? 1 : -1;
+				qboolean isHardStrafe = (abs(rawDir) == 2);
+				const char* keyStr = isHardStrafe ? (sDir == 1 ? "Just D" : "Just A") : (sDir == 1 ? "W+D" : "W+A");
+
+				trap->Print("[%s] FATALITY (STUCK) %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Pred: %.1f) | Act Z: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
+					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq, level.time - bot2_states[clientNum].tele_jumpStartTime, bot2_states[clientNum].tele_takeoffSpd,
+					aDist, pMoveDist, aZDrop, pm_ZDrop, cPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], cPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
+					keyStr);
+			}
+			G_Kill(ent); return;
+		}
 		else if (level.time - bot2_states[clientNum].stuck_timer > 3000) {
 			if (level.time - bot2_states[clientNum].unstuck_phase_timer > 400) { bot2_states[clientNum].unstuck_phase = rand() % 5; bot2_states[clientNum].unstuck_phase_timer = level.time; }
 			int ph = bot2_states[clientNum].unstuck_phase;
