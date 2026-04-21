@@ -298,6 +298,32 @@ extern "C" int NavMesh_GetPath(int passEntityNum, const float* startQuake, const
 	return count;
 }
 
+extern "C" float NavMesh_GetPathDistance(int passEntityNum, const float* startQuake, const float* endQuake) {
+	float waypoints[512 * 3];
+	int count = NavMesh_GetPath(passEntityNum, startQuake, endQuake, waypoints, 512);
+	if (count < 2) {
+		float dx = startQuake[0] - endQuake[0];
+		float dy = startQuake[1] - endQuake[1];
+		float dz = startQuake[2] - endQuake[2];
+		return sqrt(dx*dx + dy*dy + dz*dz) + 10000.0f; // Heavy penalty for no navmesh path
+	}
+
+	float totalDist = 0.0f;
+	// Calculate distance from start to first waypoint
+	float dx = waypoints[0] - startQuake[0];
+	float dy = waypoints[1] - startQuake[1];
+	float dz = waypoints[2] - startQuake[2];
+	totalDist += sqrt(dx*dx + dy*dy + dz*dz);
+
+	for (int i = 0; i < count - 1; i++) {
+		dx = waypoints[(i+1)*3 + 0] - waypoints[i*3 + 0];
+		dy = waypoints[(i+1)*3 + 1] - waypoints[i*3 + 1];
+		dz = waypoints[(i+1)*3 + 2] - waypoints[i*3 + 2];
+		totalDist += sqrt(dx*dx + dy*dy + dz*dz);
+	}
+	return totalDist;
+}
+
 extern "C" int NavMesh_IsPointOnMesh(const float* point) {
 	if (!g_navMesh || !g_navQuery || !IsValidVector(point)) return 0;
 

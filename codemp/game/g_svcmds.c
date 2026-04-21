@@ -474,6 +474,25 @@ typedef struct svcmd_s {
 	qboolean	dedicated;
 } svcmd_t;
 
+#include "ai_bot2.h"
+
+void Svcmd_BotTestRouting_f( void ) {
+	char arg[MAX_TOKEN_CHARS];
+	int clientNum = 0;
+	if (trap->Argc() >= 2) {
+		trap->Argv(1, arg, sizeof(arg));
+		clientNum = atoi(arg);
+	}
+	bot2_states[clientNum].test_active = qtrue;
+	bot2_states[clientNum].test_variation = 0;
+	bot2_states[clientNum].test_run_idx = 0;
+	bot2_states[clientNum].test_retries = 0;
+	bot2_states[clientNum].test_had_flag = qfalse;
+	bot2_states[clientNum].test_waiting_for_teleport = qtrue;
+	trap->Print("Started Routing Test on Bot %d. Resetting Bot for fresh run...\n", clientNum);
+	G_Kill(&g_entities[clientNum]);
+}
+
 int svcmdcmp( const void *a, const void *b ) {
 	return Q_stricmp( (const char *)a, ((svcmd_t*)b)->name );
 }
@@ -482,6 +501,7 @@ svcmd_t svcmds[] = {
 	{ "addbot",						Svcmd_AddBot_f,						qfalse },
 	{ "addbot2",					Svcmd_AddBot2_f,					qfalse },
 	{ "addip",						Svcmd_AddIP_f,						qfalse },
+	{ "bot_test_routing",			Svcmd_BotTestRouting_f,				qfalse },
 	{ "botlist",					Svcmd_BotList_f,					qfalse },
 	{ "entitylist",					Svcmd_EntityList_f,					qfalse },
 	{ "forceteam",					Svcmd_ForceTeam_f,					qfalse },

@@ -1,0 +1,12 @@
+Analysis: Path from Node 1249 to Node 550
+Nodes reachable from 1249: 1640
+Nodes that can reach 550: 756
+
+--- GAP DETECTION ---
+The graph is split. Searching for the shortest jump to connect the two islands...
+Closest Gap: Node 2140 (Start-Island) -> Node 2089 (End-Island)
+Distance: 416.1
+  Node 2140 Origin: (3019.49951171875, 4616.0029296875, 1429.7945556640625)
+  Node 2089 Origin: (2929.499755859375, 4468.0, 1808.125)
+  Physical Delta: 2D Dist: 173.2, Height Delta: 378.3
+  REASON: Height delta exceeds Force Jump 3 limit (320 units).

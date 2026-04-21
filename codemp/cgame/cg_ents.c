@@ -3278,6 +3278,7 @@ static void CG_FX( centity_t *cent )
 }
 
 
+
 /*
 ===============
 CG_AddCEntity

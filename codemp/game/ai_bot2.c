@@ -26,6 +26,9 @@ bot2_state_t bot2_states[MAX_CLIENTS] = { 0 };
 void Bot2_ClearState(int clientNum) {
 	if (clientNum >= 0 && clientNum < MAX_CLIENTS) {
 		memset(&bot2_states[clientNum], 0, sizeof(bot2_state_t));
+		// targetEntNum=0 after memset is entity 0 (world), which has no client.
+		// Explicitly set to -1 so any accidental deref is caught by our guards.
+		bot2_states[clientNum].targetEntNum = -1;
 	}
 }
 
@@ -92,6 +95,91 @@ void Bot2_Think(int clientNum, int time) {
 	gentity_t* ent = &g_entities[clientNum]; usercmd_t ucmd; char serverCmd[1024];
 
 	if (!ent || !ent->inuse || !ent->client || !botstates[clientNum]) return;
+
+	// Defensive: if macroState is out of range the struct was never properly cleared
+	// (e.g. bot wasn't inuse during BotAILoadMap on the previous map change).
+	// Reset rather than crash on a stale targetEntNum dereference.
+	if ((int)bot2_states[clientNum].macroState < 0 || (int)bot2_states[clientNum].macroState >= 9) {
+		Bot2_ClearState(clientNum);
+	}
+
+	int botTeam = ent->client->sess.sessionTeam, enemyFlagItem = (botTeam == TEAM_RED) ? PW_BLUEFLAG : PW_REDFLAG;
+	int hasFlag = (ent->client->ps.powerups[enemyFlagItem] != 0) ? 1 : 0;
+	gentity_t* myFlag = G_Find(NULL, FOFS(classname), (botTeam == TEAM_RED) ? "team_CTF_redflag" : "team_CTF_blueflag");
+
+	// --- ROUTING TEST HARNESS (Capture Check - Absolute Priority) ---
+	if (bot2_states[clientNum].test_active && bot2_states[clientNum].test_had_flag && !hasFlag) {
+		gentity_t* homeFlag = NULL;
+		while ((homeFlag = G_Find(homeFlag, FOFS(classname), (botTeam == TEAM_RED) ? "team_CTF_redflag" : "team_CTF_blueflag")) != NULL) {
+			if (homeFlag->parent == NULL && (homeFlag->flags & FL_DROPPED_ITEM) == 0) break;
+		}
+		if (!homeFlag) homeFlag = G_Find(NULL, FOFS(classname), (botTeam == TEAM_RED) ? "team_CTF_redflag" : "team_CTF_blueflag");
+
+		float distToBase = homeFlag ? Distance(ent->client->ps.origin, homeFlag->s.origin) : 999999.0f;
+		if (distToBase < 1500.0f) {
+			float run_time = (level.time - bot2_states[clientNum].test_start_time) / 1000.0f;
+			int v = bot2_states[clientNum].test_variation, r = bot2_states[clientNum].test_run_idx;
+			bot2_states[clientNum].test_results[v][r] = run_time;
+			trap->Print("TEST RUN SUCCESS! Variation %d, Run %d: %.2f seconds. Resetting Force...\n", v, r, run_time);
+			bot2_states[clientNum].test_retries = 0;
+
+			if (++bot2_states[clientNum].test_run_idx >= 2) {
+				bot2_states[clientNum].test_run_idx = 0;
+				if (++bot2_states[clientNum].test_variation >= 10) {
+					trap->Print("========== ROUTING TEST SCOREBOARD ==========\n");
+					for (int i = 0; i < 10; i++) {
+						float total = 0.0f;
+						for (int j = 0; j < 2; j++) total += bot2_states[clientNum].test_results[i][j];
+						trap->Print("Variation %d Avg: %.2f sec\n", i, total / 2.0f);
+					}
+					trap->Print("=============================================\n");
+					bot2_states[clientNum].test_active = qfalse;
+				}
+			}
+		} else {
+			if (++bot2_states[clientNum].test_retries < 2) {
+				trap->Print("TEST RUN FAILED! Bot lost flag %.0f units from base. Retrying (Retry %d/1)...\n", distToBase, bot2_states[clientNum].test_retries);
+			} else {
+				int v = bot2_states[clientNum].test_variation, r = bot2_states[clientNum].test_run_idx;
+				bot2_states[clientNum].test_results[v][r] = 99.0f;
+				bot2_states[clientNum].test_retries = 0;
+				trap->Print("TEST RUN FAILED TWICE! Recording 99.0s penalty for Var %d, Run %d. Moving on.\n", v, r);
+
+				if (++bot2_states[clientNum].test_run_idx >= 2) {
+					bot2_states[clientNum].test_run_idx = 0;
+					if (++bot2_states[clientNum].test_variation >= 10) {
+						trap->Print("========== ROUTING TEST SCOREBOARD ==========\n");
+						for (int i = 0; i < 10; i++) {
+							float total = 0.0f;
+							for (int j = 0; j < 2; j++) total += bot2_states[clientNum].test_results[i][j];
+							trap->Print("Variation %d Avg: %.2f sec\n", i, total / 2.0f);
+						}
+						trap->Print("=============================================\n");
+						bot2_states[clientNum].test_active = qfalse;
+					}
+				}
+			}
+		}
+		bot2_states[clientNum].test_had_flag = qfalse;
+		bot2_states[clientNum].test_waiting_for_teleport = qtrue;
+		G_Kill(ent); return;
+	}
+
+	if (bot2_states[clientNum].tele_hasFlag && !hasFlag) {
+		bot2_states[clientNum].tele_hasFlag = 0;
+		if (bot2_states[clientNum].test_active) bot2_states[clientNum].test_waiting_for_teleport = qtrue;
+		G_Kill(ent); return;
+	}
+	// --- ROUTING TEST HARNESS (Flag Pickup Detection) ---
+	if (bot2_states[clientNum].test_active && !bot2_states[clientNum].test_had_flag
+		&& hasFlag && !bot2_states[clientNum].tele_hasFlag) {
+		bot2_states[clientNum].test_had_flag = qtrue;
+		bot2_states[clientNum].test_start_time = level.time;
+		trap->Print("TEST: Bot %d grabbed enemy flag! Timer started (Var %d, Run %d).\n",
+			clientNum, bot2_states[clientNum].test_variation, bot2_states[clientNum].test_run_idx);
+	}
+	bot2_states[clientNum].tele_hasFlag = hasFlag;
+
 	while (trap->BotGetServerCommand(ent->s.number, serverCmd, sizeof(serverCmd))) {}
 	ent->client->inactivityTime = level.time + 1000000;
 
@@ -161,6 +249,46 @@ void Bot2_Think(int clientNum, int time) {
 		botstates[clientNum]->lastucmd = ucmd; trap->BotUserCommand(ent->s.number, &ucmd); return;
 	}
 
+	// --- ROUTING TEST HARNESS (Teleport to Start Position) ---
+	if (bot2_states[clientNum].test_active && bot2_states[clientNum].test_waiting_for_teleport) {
+		// Find where the enemy flag lives
+		const char* eFlagClass = (botTeam == TEAM_RED) ? "team_CTF_blueflag" : "team_CTF_redflag";
+		gentity_t* eFlag = G_Find(NULL, FOFS(classname), eFlagClass);
+		if (eFlag) {
+			// Find nearest medpack to enemy flag as the run start position
+			const char* medNames[] = { "item_medpac", "item_medpac_big" };
+			gentity_t* medpack = GetNearestItem(eFlag->s.origin, medNames, 2, 3000.0f);
+			vec3_t telePos;
+			if (medpack) {
+				VectorCopy(medpack->s.origin, telePos);
+				telePos[2] += 24.0f;
+				trap->Print("TEST: Teleporting Bot %d to medpack at (%.0f,%.0f,%.0f) — Var %d, Run %d.\n",
+					clientNum, telePos[0], telePos[1], telePos[2],
+					bot2_states[clientNum].test_variation, bot2_states[clientNum].test_run_idx);
+			} else {
+				// Fallback: land just in front of enemy flag
+				VectorCopy(eFlag->s.origin, telePos);
+				telePos[2] += 48.0f;
+				trap->Print("TEST: No medpack found near enemy flag — teleporting Bot %d directly to flag.\n", clientNum);
+			}
+			// Perform the teleport
+			VectorCopy(telePos, ent->client->ps.origin);
+			VectorClear(ent->client->ps.velocity);
+			ent->client->ps.pm_time = 0;
+			trap->LinkEntity(ent);
+			// Full health + force pool for a clean benchmark run
+			ent->health = ent->client->ps.stats[STAT_HEALTH] = 100;
+			ent->client->ps.stats[STAT_ARMOR] = 100;
+			ent->client->ps.fd.forcePower = ent->client->ps.fd.forcePowerMax;
+		}
+		bot2_states[clientNum].test_waiting_for_teleport = qfalse;
+		bot2_states[clientNum].test_had_flag = qfalse;
+		bot2_states[clientNum].spawnCooldown = level.time;
+		bot2_states[clientNum].stuck_timer = level.time;
+		VectorCopy(ent->client->ps.origin, bot2_states[clientNum].stuck_pos);
+		// Fall through — let normal think run from the new position
+	}
+
 	ucmd.weapon = WP_BRYAR_PISTOL; ent->client->ps.stats[STAT_WEAPONS] |= (1 << WP_BRYAR_PISTOL); if (ent->client->ps.ammo[2] < 10) ent->client->ps.ammo[2] = 100;
 	if (bot2_states[clientNum].role != ROLE_BASE) {
 		const int wpn_prio[] = { WP_ROCKET_LAUNCHER, WP_FLECHETTE, WP_REPEATER, WP_CONCUSSION, WP_BOWCASTER, WP_BLASTER, WP_DEMP2 };
@@ -169,15 +297,11 @@ void Bot2_Think(int clientNum, int time) {
 		}
 	}
 
-	int botTeam = ent->client->sess.sessionTeam, enemyFlagItem = (botTeam == TEAM_RED) ? PW_BLUEFLAG : PW_REDFLAG;
-	int hasFlag = (ent->client->ps.powerups[enemyFlagItem] != 0) ? 1 : 0;
-	if (bot2_states[clientNum].tele_hasFlag && !hasFlag) { bot2_states[clientNum].tele_hasFlag = 0; G_Kill(ent); return; }
-	bot2_states[clientNum].tele_hasFlag = hasFlag;
-
 	// --- MACRO TACTICS ENGINE ---
 	macroState_t oldMacro = bot2_states[clientNum].macroState;
 	gentity_t* redFlag = G_Find(NULL, FOFS(classname), "team_CTF_redflag"), * blueFlag = G_Find(NULL, FOFS(classname), "team_CTF_blueflag");
-	gentity_t* myFlag = (botTeam == TEAM_RED) ? redFlag : blueFlag, * enemyFlag = (botTeam == TEAM_RED) ? blueFlag : redFlag;
+	myFlag = (botTeam == TEAM_RED) ? redFlag : blueFlag;
+	gentity_t* enemyFlag = (botTeam == TEAM_RED) ? blueFlag : redFlag;
 
 	// Calculate contextual distance metrics globally for state transitions
 	float totalFlagDist = (myFlag && enemyFlag) ? Distance(myFlag->s.origin, enemyFlag->s.origin) : 5000.0f;
@@ -284,7 +408,19 @@ void Bot2_Think(int clientNum, int time) {
 			if (level.time % 2000 < 50) trap->Print("[%s | %s] Target lost, intercepting at enemy base.\n", ent->client->pers.netname, macroNames[bot2_states[clientNum].macroState]);
 		}
 	} break;
-	case MACRO_ESCORT_FC: if (bot2_states[clientNum].targetEntNum >= 0) VectorCopy(g_entities[bot2_states[clientNum].targetEntNum].client->ps.origin, targetOrigin); break;
+	case MACRO_ESCORT_FC: {
+		int tEnt = bot2_states[clientNum].targetEntNum;
+		if (tEnt >= 0 && tEnt < MAX_CLIENTS
+			&& g_entities[tEnt].inuse && g_entities[tEnt].client
+			&& g_entities[tEnt].client->pers.connected == CON_CONNECTED) {
+			VectorCopy(g_entities[tEnt].client->ps.origin, targetOrigin);
+		} else {
+			// FC disconnected or state is stale — fall back to flag grab
+			bot2_states[clientNum].macroState = MACRO_FETCH_FLAG;
+			bot2_states[clientNum].targetEntNum = -1;
+			if (enemyFlag) VectorCopy(enemyFlag->s.origin, targetOrigin);
+		}
+	} break;
 	case MACRO_GET_WEAPON: {
 		const char* heavy[] = { "weapon_rocket_launcher", "weapon_flechette", "weapon_repeater" }, * trips[] = { "weapon_trip_mine" };
 		gentity_t* item = GetNearestItem(ent->client->ps.origin, (bot2_states[clientNum].role == ROLE_CHASE) ? heavy : trips, (bot2_states[clientNum].role == ROLE_CHASE) ? 3 : 1, 99999.0f);
@@ -371,7 +507,8 @@ void Bot2_Think(int clientNum, int time) {
 
 	// --- TARGETING & WEAPON FIRE LOGIC ---
 	if (bot2_states[clientNum].macroState == MACRO_HUNT_TRIPMINES) {
-		gentity_t* mine = (bot2_states[clientNum].targetEntNum >= MAX_CLIENTS) ? &g_entities[bot2_states[clientNum].targetEntNum] : NULL;
+		int mineEnt = bot2_states[clientNum].targetEntNum;
+		gentity_t* mine = (mineEnt >= MAX_CLIENTS && mineEnt < MAX_GENTITIES) ? &g_entities[mineEnt] : NULL;
 		if (mine && mine->inuse && mine->r.linked) {
 			isShootingMine = qtrue; lockAim = wantsToShoot = qtrue;
 			VectorSubtract(mine->s.origin, ent->client->ps.origin, aimDir);
@@ -469,7 +606,15 @@ void Bot2_Think(int clientNum, int time) {
 
 	qboolean wantsSpeed = !(bot2_states[clientNum].macroState == MACRO_CAMP_REGEN || bot2_states[clientNum].macroState == MACRO_HUNT_TRIPMINES);
 
-	if (ent->client->ps.fd.forcePower >= 50 && !ent->client->ps.fd.forceButtonNeedRelease) {
+	// Absorb: activate when carrying the flag or inside the enemy base area while fetching.
+	// baseRadius (40% of flag-to-flag dist) reuses the existing spatial threshold.
+	qboolean inEnemyBase = enemyFlag && (Distance(ent->client->ps.origin, enemyFlag->s.origin) < baseRadius);
+	qboolean wantsAbsorb = hasFlag || ((bot2_states[clientNum].macroState == MACRO_FETCH_FLAG) && inEnemyBase);
+	qboolean absorbActive = !!(ent->client->ps.fd.forcePowersActive & (1 << FP_ABSORB));
+
+	if (!ent->client->ps.fd.forceButtonNeedRelease) {
+		qboolean speedActive = !!(ent->client->ps.fd.forcePowersActive & (1 << FP_SPEED));
+
 		if (bot2_states[clientNum].role == ROLE_BASE && ent->client->ps.fd.forcePower >= 75 && (level.time - bot2_states[clientNum].abilityTimer > 5000)) {
 			int needsHeal = 0;
 			for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -485,8 +630,23 @@ void Bot2_Think(int clientNum, int time) {
 			ucmd.buttons |= BUTTON_FORCEPOWER;
 			bot2_states[clientNum].abilityTimer = level.time;
 		}
-		else if ((wantsSpeed && !(ent->client->ps.fd.forcePowersActive & (1 << FP_SPEED))) || (!wantsSpeed && (ent->client->ps.fd.forcePowersActive & (1 << FP_SPEED)))) {
-			ucmd.forcesel = FP_SPEED; ucmd.buttons |= BUTTON_FORCEPOWER;
+		else if (wantsAbsorb != absorbActive && (absorbActive || ent->client->ps.fd.forcePower >= 15)) {
+			// Toggle absorb on or off to match desired state
+			// If it's already active, it costs 0 to turn off. If it's off, it costs 15 to turn on.
+			ucmd.forcesel = FP_ABSORB;
+			ucmd.buttons |= BUTTON_FORCEPOWER;
+		}
+		else if (wantsSpeed != speedActive && (speedActive || ent->client->ps.fd.forcePower >= 50)) {
+			// Toggle speed on or off. If active, costs 0 to turn off. If off, costs 50 to turn on.
+			ucmd.forcesel = FP_SPEED; 
+			ucmd.buttons |= BUTTON_FORCEPOWER;
+		}
+		else {
+			// CRITICAL FIX: Explicitly zero forcesel if no new button press is sent. 
+			// If forcesel is left as a previous value (e.g. FP_ABSORB) from lastucmd, and the engine
+			// unexpectedly clears or processes forceButtonNeedRelease, the engine might re-evaluate
+			// the lingering FP_ABSORB command as a toggle request and turn the power off.
+			ucmd.forcesel = 0; 
 		}
 	}
 
@@ -499,3 +659,4 @@ void Bot2_Think(int clientNum, int time) {
 
 	botstates[clientNum]->lastucmd = ucmd; trap->BotUserCommand(ent->s.number, &ucmd);
 }
+                                                                                                                                                                                                                                                                                                                               

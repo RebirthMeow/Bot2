@@ -112,7 +112,7 @@ void BotBreadcrumb(const char* format, ...) {
 // ==============================================================================
 // Phantom Pmove Simulation Engine
 // ==============================================================================
-qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir, float max_run_speed, vec3_t out_pmove_land_pos) {
+qboolean SimulatePmoveTrajectory(gentity_t* ent, playerState_t* in_ps, float start_yaw, int strafeDir, float angle_fraction, float max_run_speed, vec3_t out_pmove_land_pos, playerState_t* out_ps) {
 	if (!ent || !ent->inuse || !ent->client || level.intermissiontime || level.time == 0) return qfalse;
 	if (!g_entities) return qfalse;
 
@@ -123,7 +123,11 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir,
 	usercmd_t dummy_cmd;
 
 	BotBreadcrumb("Copying dummy_ps...");
-	memcpy(&dummy_ps, &ent->client->ps, sizeof(playerState_t));
+	if (in_ps) {
+		memcpy(&dummy_ps, in_ps, sizeof(playerState_t));
+	} else {
+		memcpy(&dummy_ps, &ent->client->ps, sizeof(playerState_t));
+	}
 	memset(&dummy_cmd, 0, sizeof(usercmd_t));
 
 	dummy_ps.delta_angles[0] = 0;
@@ -224,8 +228,20 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir,
 
 		float magic_angle = 0.0f;
 		if (sim_current_speed > max_run_speed - 15.0f) {
-			float acos_val = (max_run_speed - 15.0f) / sim_current_speed;
-			magic_angle = acos((acos_val < -1.0f) ? -1.0f : ((acos_val > 1.0f) ? 1.0f : acos_val)) * (180.0f / M_PI);
+			float wishspeed = max_run_speed - 15.0f;
+			float low_acos = wishspeed / sim_current_speed;
+			low_acos = (low_acos < -1.0f) ? -1.0f : ((low_acos > 1.0f) ? 1.0f : low_acos);
+			float low_angle = acos(low_acos) * (180.0f / M_PI);
+
+			if (!isHardStrafe && angle_fraction > 0.0f) {
+				// Optimal angle: arccos(wishspeed / (2*speed)) — maximises per-frame speed gain
+				float opt_acos = wishspeed / (2.0f * sim_current_speed);
+				opt_acos = (opt_acos < -1.0f) ? -1.0f : ((opt_acos > 1.0f) ? 1.0f : opt_acos);
+				float opt_angle = acos(opt_acos) * (180.0f / M_PI);
+				magic_angle = low_angle + angle_fraction * (opt_angle - low_angle);
+			} else {
+				magic_angle = low_angle;
+			}
 		}
 
 		if (isHardStrafe) {
@@ -346,6 +362,9 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir,
 	if (landed && out_pmove_land_pos) {
 		VectorCopy(dummy_ps.origin, out_pmove_land_pos);
 	}
+	if (landed && out_ps) {
+		memcpy(out_ps, &dummy_ps, sizeof(playerState_t));
+	}
 
 	BotBreadcrumb("SimulatePmoveTrajectory DONE");
 	return landed;
@@ -354,10 +373,122 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, float start_yaw, int strafeDir,
 // ==============================================================================
 // Kinematic Math & Jump Arc Prediction
 // ==============================================================================
-qboolean IsSafeToJump(gentity_t* ent, int clientNum, vec3_t start, float current_speed, float vel_yaw, int testDir, float max_run_speed, char* failReason, char* warningString, vec3_t out_land_pos, float* out_land_speed) {
-	vec3_t pmove_land;
 
-	if (!SimulatePmoveTrajectory(ent, vel_yaw, testDir, max_run_speed, pmove_land)) {
+static float ScoreJumpChain(int clientNum, float nav_dist, float line_dist, float avg_spd2d, float z_loss) {
+	float speed_weight;
+	float two_jump_dist = avg_spd2d * 2.0f;
+	if (two_jump_dist < 200.0f) two_jump_dist = 200.0f;
+	
+	int variation = bot2_states[clientNum].test_active ? bot2_states[clientNum].test_variation : 2; // Var 2 (Corner Cutter) is the proven default
+	
+	switch (variation) {
+	case 0: // Baseline
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 2.0f : 2.0f;
+		return (nav_dist * 0.70f) + (line_dist * 0.30f) - (avg_spd2d * speed_weight) + (z_loss * 2.0f);
+	case 1: // Pure Speed
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 4.0f : 4.0f;
+		return (nav_dist * 1.00f) + (line_dist * 0.00f) - (avg_spd2d * speed_weight) + (z_loss * 2.0f);
+	case 2: // Corner Cutter
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 1.0f : 1.0f;
+		return (nav_dist * 0.50f) + (line_dist * 0.50f) - (avg_spd2d * speed_weight) + (z_loss * 2.0f);
+	case 3: // Fearless
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 2.0f : 2.0f;
+		return (nav_dist * 0.70f) + (line_dist * 0.30f) - (avg_spd2d * speed_weight) + (z_loss * 0.0f);
+	case 4: // Anti-Speed (For science)
+		return (nav_dist * 0.70f) + (line_dist * 0.30f) + (z_loss * 2.0f);
+	case 5: // Heavy Z Penalty
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 2.0f : 2.0f;
+		return (nav_dist * 0.70f) + (line_dist * 0.30f) - (avg_spd2d * speed_weight) + (z_loss * 5.0f);
+	case 6: // Pure Line
+		speed_weight = (line_dist < two_jump_dist) ? (line_dist / two_jump_dist) * 2.0f : 2.0f;
+		return (nav_dist * 0.00f) + (line_dist * 1.00f) - (avg_spd2d * speed_weight) + (z_loss * 2.0f);
+	case 7: // Speed > Distance
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 10.0f : 10.0f;
+		return (nav_dist * 0.50f) + (line_dist * 0.50f) - (avg_spd2d * speed_weight) + (z_loss * 2.0f);
+	case 8: // Hyper-Corner Cutter
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 0.5f : 0.5f;
+		return (nav_dist * 0.20f) + (line_dist * 0.80f) - (avg_spd2d * speed_weight) + (z_loss * 2.0f);
+	case 9: // The Turtle
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 0.1f : 0.1f;
+		return (nav_dist * 0.90f) + (line_dist * 0.10f) - (avg_spd2d * speed_weight) + (z_loss * 10.0f);
+	default:
+		speed_weight = (nav_dist < two_jump_dist) ? (nav_dist / two_jump_dist) * 2.0f : 2.0f;
+		return (nav_dist * 0.70f) + (line_dist * 0.30f) - (avg_spd2d * speed_weight) + (z_loss * 2.0f);
+	}
+}
+
+// Written at depth==1 whenever a new best score is found.
+// Single-threaded game loop means this is safe without a lock.
+static int s_lastFracWinner = 0;
+
+static float EvaluateJumpChain(gentity_t* ent, vec3_t originalStart, playerState_t* ps, float total_time, float total_dist2d, int depth, int max_depth, vec3_t targetOrigin, float max_run_speed) {
+	if (depth >= max_depth) return 9999999.0f;
+
+	// Terminal depth: this is the 4th jump — always score it regardless of distance.
+	// Non-terminal: only allow a landing to win if it's within 500u of the goal.
+	// This prevents shallow chains from "kicking the can" with a marginally better
+	// score while making less real progress toward the target.
+	qboolean is_terminal = (depth == max_depth - 1);
+
+	float land_vel_yaw = atan2(ps->velocity[1], ps->velocity[0]) * (180.0f / M_PI);
+	static const int chainDirs[2] = { 1, -1 };
+	// 2 angle variants: lower boundary and optimal.
+	// Intermediates removed after telemetry showed the extremes win ~62% combined.
+	static const float chainFracs[2] = { 0.0f, 1.0f };
+
+	float best_score = 9999999.0f;
+	for (int d = 0; d < 2; d++) {
+		for (int a = 0; a < 2; a++) {
+			vec3_t chain_land;
+			playerState_t chain_ps;
+			if (SimulatePmoveTrajectory(ent, ps, land_vel_yaw, chainDirs[d], chainFracs[a], max_run_speed, chain_land, &chain_ps)) {
+				float chain_land_yaw = atan2(chain_ps.velocity[1], chain_ps.velocity[0]) * (180.0f / M_PI);
+				if (NavMesh_IsPointOnMesh(chain_land) && TraceFloorScore(ent, chain_land, chain_land_yaw, 32.0f, NULL) >= 0.0f) {
+					float jump_time = (chain_ps.commandTime - ps->commandTime) / 1000.0f;
+					if (jump_time <= 0.001f) jump_time = 0.1f;
+
+					float j_dx = chain_land[0] - ps->origin[0];
+					float j_dy = chain_land[1] - ps->origin[1];
+					float jump_dist2d = sqrt((j_dx*j_dx) + (j_dy*j_dy));
+
+					float new_total_time = total_time + jump_time;
+					float new_total_dist2d = total_dist2d + jump_dist2d;
+					float avg_spd2d = new_total_dist2d / new_total_time;
+
+					float c_nav = NavMesh_GetPathDistance(ent->s.number, chain_land, targetOrigin);
+					float c_line = Distance(chain_land, targetOrigin);
+					float new_z_loss = max(0.0f, originalStart[2] - chain_land[2]);
+
+					float current_score = ScoreJumpChain(ent->s.number, c_nav, c_line, avg_spd2d, new_z_loss);
+
+					// Allow this landing's score only if terminal or close enough to the goal
+					if (is_terminal || c_line < 500.0f) {
+						if (current_score < best_score) {
+							best_score = current_score;
+							if (depth == 1) s_lastFracWinner = a;
+						}
+					}
+
+					// Always recurse deeper (only at non-terminal depths)
+					if (!is_terminal) {
+						float child_score = EvaluateJumpChain(ent, originalStart, &chain_ps, new_total_time, new_total_dist2d, depth + 1, max_depth, targetOrigin, max_run_speed);
+						if (child_score < best_score) {
+							best_score = child_score;
+							if (depth == 1) s_lastFracWinner = a;
+						}
+					}
+				}
+			}
+		}
+	}
+	return best_score;
+}
+
+qboolean IsSafeToJump(gentity_t* ent, int clientNum, vec3_t start, float current_speed, float vel_yaw, int testDir, float max_run_speed, char* failReason, char* warningString, vec3_t out_land_pos, float* out_land_speed, vec3_t targetOrigin, float* out_chain_dist, int* out_chain_frac) {
+	vec3_t pmove_land;
+	playerState_t pmove_ps;
+
+	if (!SimulatePmoveTrajectory(ent, NULL, vel_yaw, testDir, 0.0f, max_run_speed, pmove_land, &pmove_ps)) {
 		if (failReason) Q_strncpyz(failReason, "Phantom Pmove: Trajectory aborted (hit wall, hurt, or pit)", 128);
 		return qfalse;
 	}
@@ -368,27 +499,52 @@ qboolean IsSafeToJump(gentity_t* ent, int clientNum, vec3_t start, float current
 		return qfalse;
 	}
 
+	// Reject landing spots that would immediately trigger ledge detection —
+	// landing there forces the bot into walk mode and kills the strafe-jump chain.
+	{
+		float land_vel_yaw = atan2(pmove_ps.velocity[1], pmove_ps.velocity[0]) * (180.0f / M_PI);
+		if (TraceFloorScore(ent, pmove_land, land_vel_yaw, 32.0f, NULL) < 0.0f) {
+			if (failReason) Q_strncpyz(failReason, "Jump lands in ledge-danger zone (chain killer)", 128);
+			return qfalse;
+		}
+	}
+
+	// --- 4-JUMP PREDICTION CHAIN ---
+	float jump1_time = (pmove_ps.commandTime - ent->client->ps.commandTime) / 1000.0f;
+	if (jump1_time <= 0.001f) jump1_time = 0.1f;
+	float j1_dx = pmove_land[0] - start[0];
+	float j1_dy = pmove_land[1] - start[1];
+	float jump1_dist2d = sqrt((j1_dx*j1_dx) + (j1_dy*j1_dy));
+	float base_avg_spd2d = jump1_dist2d / jump1_time;
+
+	float base_nav = NavMesh_GetPathDistance(ent->s.number, pmove_land, targetOrigin);
+	float base_line = Distance(pmove_land, targetOrigin);
+	float base_z_loss = max(0.0f, start[2] - pmove_land[2]);
+
+	float jump1_score = ScoreJumpChain(ent->s.number, base_nav, base_line, base_avg_spd2d, base_z_loss);
+
+	// Jump1 only competes if it already lands within 500u of the goal.
+	// If it doesn't, force the chain evaluator to own the decision — this prevents
+	// a marginally cheaper single jump from winning when we're still far away.
+	float best_chain_dist = (base_line < 500.0f) ? jump1_score : 9999999.0f;
+
+	float future_chain_score = EvaluateJumpChain(ent, start, &pmove_ps, jump1_time, jump1_dist2d, 1, 4, targetOrigin, max_run_speed);
+	if (future_chain_score < best_chain_dist) {
+		best_chain_dist = future_chain_score;
+	}
+
+	// Fallback: if no chain produced a valid score (all 4th-jump landings failed
+	// navmesh/ledge checks), accept jump1 unconditionally so we don't stall.
+	if (best_chain_dist >= 9999999.0f) {
+		best_chain_dist = jump1_score;
+	}
+
+	if (out_chain_dist) *out_chain_dist = best_chain_dist;
+	if (out_chain_frac) *out_chain_frac = s_lastFracWinner;
+	// -----------------------------------
+
 	if (out_land_pos) VectorCopy(pmove_land, out_land_pos);
 	if (out_land_speed) *out_land_speed = max_run_speed;
-
-	bot2_states[clientNum].tele_jumpSeq++;
-	bot2_states[clientNum].tele_jumpStartTime = level.time;
-	bot2_states[clientNum].tele_crossedZ = qfalse;
-	bot2_states[clientNum].tele_predDir = testDir;
-	bot2_states[clientNum].tele_takeoffYaw = vel_yaw;
-
-	VectorCopy(ent->client->ps.origin, bot2_states[clientNum].tele_prevPos);
-	VectorCopy(ent->client->ps.origin, bot2_states[clientNum].tele_startPos);
-
-	bot2_states[clientNum].tele_takeoffSpd = current_speed;
-	bot2_states[clientNum].tele_inAir = 1;
-
-	// Populate telemetry with PMove's ground truth so the logs keep working
-	VectorCopy(pmove_land, bot2_states[clientNum].tele_predPos);
-	VectorCopy(pmove_land, bot2_states[clientNum].tele_pmovePredPos);
-
-	float dx = pmove_land[0] - start[0], dy = pmove_land[1] - start[1];
-	bot2_states[clientNum].tele_predDist = sqrt((dx * dx) + (dy * dy));
 
 	return qtrue;
 }
@@ -493,7 +649,7 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 	}
 	// --- STATE 0: WALK/IDLE & RUNNING JUMPS ---
 	else if (bot2_states[clientNum].state == 0) {
-		bot2_states[clientNum].tele_jumpSeq = 0; float bDist = 64.0f + (current_speed * 0.0f), dYaw = base_target_yaw; qboolean lDang = qfalse;
+		bot2_states[clientNum].tele_jumpSeq = 0; float bDist = 32.0f, dYaw = base_target_yaw; qboolean lDang = qfalse;
 
 		if (current_speed > 100.0f && TraceFloorScore(ent, ent->client->ps.origin, vel_yaw, bDist, NULL) < 0.0f) { lDang = qtrue; dYaw = vel_yaw; }
 		else if (TraceFloorScore(ent, ent->client->ps.origin, base_target_yaw, bDist, NULL) < 0.0f) { lDang = qtrue; dYaw = base_target_yaw; }
@@ -501,7 +657,6 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 		if (lDang && !bot2_states[clientNum].ledgeEvading) { bot2_states[clientNum].ledgeEvading = 1; trap->Print("[%s] STATE Event: Ledge Danger Detected! Evading...\n", ent->client->pers.netname); }
 		else if (!lDang && bot2_states[clientNum].ledgeEvading) { bot2_states[clientNum].ledgeEvading = 0; trap->Print("[%s] STATE Event: Ledge Clear. Resuming normal pathing.\n", ent->client->pers.netname); }
 
-		float aD = vel_yaw - base_target_yaw; while (aD > 180.0f) aD -= 360.0f; while (aD < -180.0f) aD += 360.0f; aD = fabs(aD);
 		qboolean jExec = qfalse;
 
 		// --- DIAGNOSTIC GATEKEEPER (STATE 0) ---
@@ -515,18 +670,22 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 			else if (lDang) {
 				Q_strncpyz(bot2_states[clientNum].lastFailReason, "Ledge danger detected ahead", sizeof(bot2_states[clientNum].lastFailReason));
 			}
-			else if (aD >= 45.0f) {
-				Q_strncpyz(bot2_states[clientNum].lastFailReason, "Not facing target (aD >= 45.0)", sizeof(bot2_states[clientNum].lastFailReason));
-			}
 			else {
 				int pDir = EvaluateStrafeDir(ent, base_target_yaw);
-				int tD[] = { pDir, pDir * 2, pDir * -1, pDir * -2 };
+				int tD[] = { pDir, pDir * -1 }; //, pDir * 2, pDir * -2 };
 
 				if (level.time - bot2_states[clientNum].jumpRetryTimer > 250) {
-					for (int d = 0; d < 4; d++) {
-						vec3_t predLandPos;
+					int best_d = -1;
+					float best_score = 9999999.0f;
+					vec3_t best_predLandPos;
+					int best_frac = 0;
 
-						if (IsSafeToJump(ent, clientNum, ent->client->ps.origin, current_speed, vel_yaw, tD[d], max_run_speed, bot2_states[clientNum].lastFailReason, NULL, predLandPos, NULL)) {
+					for (int d = 0; d < 2; d++) {
+						vec3_t predLandPos;
+						float chain_dist = 9999999.0f;
+						int chain_frac = 0;
+
+						if (IsSafeToJump(ent, clientNum, ent->client->ps.origin, current_speed, vel_yaw, tD[d], max_run_speed, bot2_states[clientNum].lastFailReason, NULL, predLandPos, NULL, targetOrigin, &chain_dist, &chain_frac)) {
 							qboolean goodJump = qtrue;
 							float jumpDist = Distance(ent->client->ps.origin, predLandPos);
 
@@ -549,17 +708,52 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 								}
 							}
 
-							if (goodJump) {
-								bot2_states[clientNum].state = 2; bot2_states[clientNum].stateTimer = level.time; bot2_states[clientNum].targetYaw = base_target_yaw;
-								bot2_states[clientNum].strafeDir = tD[d];
-								ucmd->upmove = 127; jExec = qtrue;
-								bot2_states[clientNum].lastFailReason[0] = '\0';
-								trap->Print("[%s] STATE Transition: Walking -> Executing Running Jump (State 2)\n", ent->client->pers.netname);
-								break;
+							if (goodJump && chain_dist < best_score) {
+								best_score = chain_dist;
+								best_d = d;
+								best_frac = chain_frac;
+								VectorCopy(predLandPos, best_predLandPos);
 							}
 						}
 					}
-					if (!jExec) bot2_states[clientNum].jumpRetryTimer = level.time;
+					
+					if (best_d != -1) {
+						bot2_states[clientNum].state = 2; bot2_states[clientNum].stateTimer = level.time; bot2_states[clientNum].targetYaw = base_target_yaw;
+						bot2_states[clientNum].strafeDir = tD[best_d];
+						ucmd->upmove = 127; jExec = qtrue;
+						bot2_states[clientNum].lastFailReason[0] = '\0';
+						
+						bot2_states[clientNum].tele_jumpSeq++;
+						bot2_states[clientNum].tele_jumpStartTime = level.time;
+						bot2_states[clientNum].tele_crossedZ = qfalse;
+						bot2_states[clientNum].tele_predDir = tD[best_d];
+						bot2_states[clientNum].tele_takeoffYaw = vel_yaw;
+						VectorCopy(ent->client->ps.origin, bot2_states[clientNum].tele_prevPos);
+						VectorCopy(ent->client->ps.origin, bot2_states[clientNum].tele_startPos);
+						bot2_states[clientNum].tele_takeoffSpd = current_speed;
+						bot2_states[clientNum].tele_inAir = 1;
+						VectorCopy(best_predLandPos, bot2_states[clientNum].tele_predPos);
+						VectorCopy(best_predLandPos, bot2_states[clientNum].tele_pmovePredPos);
+						float dx = best_predLandPos[0] - ent->client->ps.origin[0], dy = best_predLandPos[1] - ent->client->ps.origin[1];
+						bot2_states[clientNum].tele_predDist = sqrt((dx * dx) + (dy * dy));
+
+						// Record winning angle fraction and update cumulative histogram
+						bot2_states[clientNum].tele_lastChainFrac = best_frac;
+						bot2_states[clientNum].tele_chainFracCounts[best_frac]++;
+						{
+							int* fc = bot2_states[clientNum].tele_chainFracCounts;
+							int total = fc[0]+fc[1];
+							trap->Print("[%s] STATE Transition: Walking -> Executing Running Jump (State 2) | Chain Score: %.1f | AngleFrac: %s\n",
+								ent->client->pers.netname, best_score, best_frac == 0 ? "boundary" : "optimal");
+							trap->Print("[%s] CHAIN AngleFrac Hist | boundary=%.0f%% optimal=%.0f%% | counts: %d %d\n",
+								ent->client->pers.netname,
+								total > 0 ? 100.0f*fc[0]/total : 0.0f,
+								total > 0 ? 100.0f*fc[1]/total : 0.0f,
+								fc[0], fc[1]);
+						}
+					} else {
+						bot2_states[clientNum].jumpRetryTimer = level.time;
+					}
 				}
 			}
 
@@ -640,158 +834,41 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 				float aDist = sqrt((dx * dx) + (dy * dy));
 
 				// Calculate PMove Predicted Distance
-				float pm_dx = bot2_states[clientNum].tele_pmovePredPos[0] - bot2_states[clientNum].tele_startPos[0];
-				float pm_dy = bot2_states[clientNum].tele_pmovePredPos[1] - bot2_states[clientNum].tele_startPos[1];
-				float pMoveDist = sqrt((pm_dx * pm_dx) + (pm_dy * pm_dy));
-
-				float yawD = vel_yaw - bot2_states[clientNum].tele_takeoffYaw;
-				while (yawD > 180.0f) yawD -= 360.0f; while (yawD < -180.0f) yawD += 360.0f;
-
-				trap->Print("[%s] Z-CROSS %d | Act T: %dms | Act D: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
-					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq,
-					level.time - bot2_states[clientNum].tele_jumpStartTime,
-					aDist, pMoveDist,
-					cPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], cPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
-					keyStr
-				);
-			}
-		}
-
-		// Landing Logic
-		qboolean minAirTimeMet = (level.time - bot2_states[clientNum].stateTimer > 250);
-		qboolean wasJustADrop = (bot2_states[clientNum].tele_jumpSeq == 0);
-
-		if (ent->client->ps.groundEntityNum != ENTITYNUM_NONE && (minAirTimeMet || wasJustADrop)) {
-			trace_t lTr; vec3_t lE, zV = { 0,0,0 }; VectorCopy(ent->client->ps.origin, lE); lE[2] -= 64.0f; trap->Trace(&lTr, ent->client->ps.origin, zV, zV, lE, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0);
-			float lSlope = (lTr.fraction < 1.0f) ? acos(lTr.plane.normal[2]) * (180.0f / M_PI) : 0.0f;
-
-			if (bot2_states[clientNum].tele_inAir && ent->client) {
-				bot2_states[clientNum].tele_inAir = 0;
-				vec3_t aLPos; VectorCopy(ent->client->ps.origin, aLPos);
-				float dx = aLPos[0] - bot2_states[clientNum].tele_startPos[0], dy = aLPos[1] - bot2_states[clientNum].tele_startPos[1];
-				float aDist = sqrt((dx * dx) + (dy * dy));
-
-				// Calculate PMove Predicted Distance & Z-Drop
-				float pm_dx = bot2_states[clientNum].tele_pmovePredPos[0] - bot2_states[clientNum].tele_startPos[0];
-				float pm_dy = bot2_states[clientNum].tele_pmovePredPos[1] - bot2_states[clientNum].tele_startPos[1];
-				float pMoveDist = sqrt((pm_dx * pm_dx) + (pm_dy * pm_dy));
-				float pm_ZDrop = bot2_states[clientNum].tele_startPos[2] - bot2_states[clientNum].tele_pmovePredPos[2];
-
-				float aZDrop = bot2_states[clientNum].tele_startPos[2] - aLPos[2];
-
-				trap->Print("[%s] JUMP %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Pred: %.1f) | Act Z: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
-					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq,
-					level.time - bot2_states[clientNum].tele_jumpStartTime,
-					bot2_states[clientNum].tele_takeoffSpd,
-					aDist, pMoveDist,
-					aZDrop, pm_ZDrop,
-					aLPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], aLPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
-					keyStr
-				);
-			}
-
-			int nDir = (lSlope > 5.0f) ? EvaluateStrafeDir(ent, base_target_yaw) : sDir * -1; qboolean cJmp = qfalse;
-			float aD = vel_yaw - base_target_yaw; while (aD > 180.0f) aD -= 360.0f; while (aD < -180.0f) aD += 360.0f; aD = fabs(aD);
-
-			if (wantsSpeed) {
-				if (current_speed < (max_run_speed - 30.0f)) {
-					// FIX: Do not blindly force cJmp = qtrue here! 
-					// If we lost speed (e.g., hit a wall), drop back to State 0 to safely walk and rebuild momentum.
-					Q_strncpyz(bot2_states[clientNum].lastFailReason, "Lost momentum; dropping to walk to rebuild speed", sizeof(bot2_states[clientNum].lastFailReason));
-					// cJmp remains false, naturally dropping the bot to State 0.
-				}
-				else if (distToTarget <= 500.0f) {
-					Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Target too close (< 500 units)", sizeof(bot2_states[clientNum].lastFailReason));
-				}
-				else if (aD > 135.0f) {
-					Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Spun around too far (aD > 135)", sizeof(bot2_states[clientNum].lastFailReason));
-				}
-				else {
-					int tD[] = { nDir, nDir * 2, nDir * -1, nDir * -2 };
-
-					if (level.time - bot2_states[clientNum].jumpRetryTimer > 250) {
-						for (int d = 0; d < 4; d++) {
-							vec3_t predLandPos;
-							if (IsSafeToJump(ent, clientNum, ent->client->ps.origin, current_speed, vel_yaw, tD[d], max_run_speed, bot2_states[clientNum].lastFailReason, NULL, predLandPos, NULL)) {
-
-								qboolean goodJump = qtrue;
-								float jumpDist = Distance(ent->client->ps.origin, predLandPos);
-
-								if (jumpDist > distToWp) {
-									if (validPath && Distance(nextWp, targetOrigin) < 32.0f) {
-										goodJump = qfalse;
-										Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Pathing - Overshooting flagstand", sizeof(bot2_states[clientNum].lastFailReason));
-									}
-									else if (validPath) {
-										vec3_t vecOvershoot, vecIdeal;
-										VectorSubtract(predLandPos, nextWp, vecOvershoot);
-										VectorNormalize(vecOvershoot);
-										VectorSubtract(targetOrigin, nextWp, vecIdeal);
-										VectorNormalize(vecIdeal);
-
-										if (DotProduct(vecOvershoot, vecIdeal) < 0.0f) {
-											goodJump = qfalse;
-											Q_strncpyz(bot2_states[clientNum].lastFailReason, "Chain Jump: Pathing - Overshoot turn too sharp", sizeof(bot2_states[clientNum].lastFailReason));
-										}
-									}
-								}
-
-								if (goodJump) {
-									bot2_states[clientNum].lastFailReason[0] = '\0';
-									cJmp = qtrue; nDir = tD[d]; break;
-								}
-							}
-						}
-						if (!cJmp) bot2_states[clientNum].jumpRetryTimer = level.time;
-					}
-				}
-
-				if (!cJmp && level.time - bot2_states[clientNum].diagTimer > 1000) {
-					trap->Print("[%s] Chain Jump Refused: %s\n", ent->client->pers.netname, bot2_states[clientNum].lastFailReason);
-					bot2_states[clientNum].diagTimer = level.time;
-				}
-			}
-
-			if (cJmp) { bot2_states[clientNum].strafeDir = nDir; ucmd->upmove = 127; trap->Print("[%s] STATE Event: Executing Chain Jump (State 2)\n", ent->client->pers.netname); }
-			else { bot2_states[clientNum].state = 0; trap->Print("[%s] STATE Transition: Landed -> Resuming Walk/Run (State 0)\n", ent->client->pers.netname); }
-			bot2_states[clientNum].stateTimer = level.time;
-		}
-	}
-
-	// --- ANTI-SNAG ENGINE ---
-	float dx = ent->client->ps.origin[0] - bot2_states[clientNum].stuck_pos[0], dy = ent->client->ps.origin[1] - bot2_states[clientNum].stuck_pos[1], dz = ent->client->ps.origin[2] - bot2_states[clientNum].stuck_pos[2];
-
-	if ((dx * dx) + (dy * dy) + (dz * dz) > 625.0f) { VectorCopy(ent->client->ps.origin, bot2_states[clientNum].stuck_pos); bot2_states[clientNum].stuck_timer = level.time; }
-	else if (distToTarget > 150.0f) {
-		if (level.time - bot2_states[clientNum].stuck_timer > 5000) {
-			if (bot2_states[clientNum].tele_inAir) {
-				vec3_t cPos; VectorCopy(ent->client->ps.origin, cPos);
-				float dx = cPos[0] - bot2_states[clientNum].tele_startPos[0], dy = cPos[1] - bot2_states[clientNum].tele_startPos[1];
-				float aDist = sqrt((dx * dx) + (dy * dy));
 				float pm_dx = bot2_states[clientNum].tele_pmovePredPos[0] - bot2_states[clientNum].tele_startPos[0], pm_dy = bot2_states[clientNum].tele_pmovePredPos[1] - bot2_states[clientNum].tele_startPos[1];
 				float pMoveDist = sqrt((pm_dx * pm_dx) + (pm_dy * pm_dy));
 				float pm_ZDrop = bot2_states[clientNum].tele_startPos[2] - bot2_states[clientNum].tele_pmovePredPos[2], aZDrop = bot2_states[clientNum].tele_startPos[2] - cPos[2];
 
-				int rawDir = bot2_states[clientNum].strafeDir;
-				int sDir = (rawDir > 0) ? 1 : -1;
-				qboolean isHardStrafe = (abs(rawDir) == 2);
-				const char* keyStr = isHardStrafe ? (sDir == 1 ? "Just D" : "Just A") : (sDir == 1 ? "W+D" : "W+A");
+				VectorCopy(cPos, bot2_states[clientNum].tele_crossPos);
 
-				trap->Print("[%s] FATALITY (STUCK) %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Pred: %.1f) | Act Z: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
+				trap->Print("[%s] Z-CROSS %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Pred: %.1f) | Act Z: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
 					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq, level.time - bot2_states[clientNum].tele_jumpStartTime, bot2_states[clientNum].tele_takeoffSpd,
 					aDist, pMoveDist, aZDrop, pm_ZDrop, cPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], cPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
 					keyStr);
 			}
-			G_Kill(ent); return;
 		}
-		else if (level.time - bot2_states[clientNum].stuck_timer > 3000) {
-			if (level.time - bot2_states[clientNum].unstuck_phase_timer > 400) { bot2_states[clientNum].unstuck_phase = rand() % 5; bot2_states[clientNum].unstuck_phase_timer = level.time; }
-			int ph = bot2_states[clientNum].unstuck_phase;
-			const char fwd[] = { -127, 127, 127, -127, 127 }, upm[] = { 127, -127, -127, 127, 127 };
-			ucmd->forwardmove = fwd[ph]; ucmd->rightmove = (ph == 3) ? ((rand() % 2 == 0) ? 127 : -127) : ((ph == 1) ? 127 : ((ph == 2) ? -127 : 0)); ucmd->upmove = upm[ph];
-			ucmd->angles[YAW] = ANGLE2SHORT(ent->client->ps.viewangles[YAW] + (ph * ((ph % 2 == 0) ? 15.0f : -15.0f))) - ent->client->ps.delta_angles[YAW];
+
+		// --- LANDING DETECTION (STATE 2 -> STATE 0) ---
+		// Guard with 150ms minimum: prevents false triggers on the same tick jump is initiated
+		// (groundEntityNum is still set for 1-2 ticks before physics lifts the bot off)
+		if (ent->client->ps.groundEntityNum != ENTITYNUM_NONE && (level.time - bot2_states[clientNum].stateTimer > 150)) {
+			if (bot2_states[clientNum].tele_inAir) {
+				vec3_t lPos; VectorCopy(ent->client->ps.origin, lPos);
+				float ldx = lPos[0] - bot2_states[clientNum].tele_startPos[0], ldy = lPos[1] - bot2_states[clientNum].tele_startPos[1];
+				float laDist = sqrt((ldx * ldx) + (ldy * ldy));
+				float lpm_dx = bot2_states[clientNum].tele_pmovePredPos[0] - bot2_states[clientNum].tele_startPos[0], lpm_dy = bot2_states[clientNum].tele_pmovePredPos[1] - bot2_states[clientNum].tele_startPos[1];
+				float lpMoveDist = sqrt((lpm_dx * lpm_dx) + (lpm_dy * lpm_dy));
+				float laZDrop = bot2_states[clientNum].tele_startPos[2] - lPos[2];
+				float lpm_ZDrop = bot2_states[clientNum].tele_startPos[2] - bot2_states[clientNum].tele_pmovePredPos[2];
+
+				trap->Print("[%s] LAND %d | Act T: %dms | Spd: %.0f | Act D: %.1f (Pred: %.1f) | Act Z: %.1f (Pred: %.1f) | XY Err: %+.1f, %+.1f | Keys: %s\n",
+					ent->client->pers.netname, bot2_states[clientNum].tele_jumpSeq, level.time - bot2_states[clientNum].tele_jumpStartTime, bot2_states[clientNum].tele_takeoffSpd,
+					laDist, lpMoveDist, laZDrop, lpm_ZDrop, lPos[0] - bot2_states[clientNum].tele_pmovePredPos[0], lPos[1] - bot2_states[clientNum].tele_pmovePredPos[1],
+					keyStr);
+
+				bot2_states[clientNum].tele_inAir = 0;
+			}
 			bot2_states[clientNum].state = 0;
+			bot2_states[clientNum].stateTimer = level.time;
 		}
 	}
-	else bot2_states[clientNum].stuck_timer = level.time;
 }
