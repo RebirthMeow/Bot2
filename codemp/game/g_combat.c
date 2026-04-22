@@ -25,6 +25,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #include "b_local.h"
 #include "bg_saga.h"
+#include "ai_bot2.h"
+#include "ai_main.h"   
 
 extern int G_ShipSurfaceForSurfName( const char *surfaceName );
 extern qboolean G_FlyVehicleDestroySurface( gentity_t *veh, int surface );
@@ -4579,7 +4581,19 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
 	if ( !attacker ) {
 		attacker = &g_entities[ENTITYNUM_WORLD];
 	}
-
+	
+	// ======================================================================
+	// BOT TELEMETRY: TRUE HIT DETECTION (SINGLE LINE)
+	// ======================================================================
+	if (attacker && attacker->client && targ && targ->client && damage > 0) {
+		if (botstates[attacker->s.number]) {
+			Bot2_PrintTelemetry(2, "%s -> [RESULT] TRUE HIT on %s for %d dmg!\n",
+				bot2_states[attacker->s.number].tele_lastAimString,
+				targ->client->pers.netname,
+				damage);
+		}
+	}
+	// ======================================================================
 	// shootable doors / buttons don't actually have any health
 
 	//if genericValue4 == 1 then it's glass or a breakable and those do have health

@@ -29,7 +29,24 @@ void Bot2_ClearState(int clientNum) {
 		// targetEntNum=0 after memset is entity 0 (world), which has no client.
 		// Explicitly set to -1 so any accidental deref is caught by our guards.
 		bot2_states[clientNum].targetEntNum = -1;
+		bot2_states[clientNum].lastAimTime = 0;
 	}
+}
+
+// Telemetry Queue Filter (Bitmask via bot_telemetry CVAR)
+// Bit 1 (1) = Movement/Jump, Bit 2 (2) = Combat/Aiming
+void Bot2_PrintTelemetry(int mode, const char* format, ...) {
+	int cvar_mode = trap->Cvar_VariableIntegerValue("bot_telemetry");
+	if (!(cvar_mode & mode)) return;
+
+	va_list argptr;
+	char string[1024];
+
+	va_start(argptr, format);
+	Q_vsnprintf(string, sizeof(string), format, argptr);
+	va_end(argptr);
+
+	trap->Print(string);
 }
 
 // ==============================================================================
@@ -328,7 +345,7 @@ void Bot2_Think(int clientNum, int time) {
 		}
 	}
 	else if (bot2_states[clientNum].role == ROLE_OFFENSE) bot2_states[clientNum].macroState = enemyFlagAtBase ? MACRO_FETCH_FLAG : MACRO_CAMP_REGEN;
-	else if (bot2_states[clientNum].role == ROLE_CHASE) bot2_states[clientNum].macroState = !myFlagAtBase ? MACRO_CHASE_THIEF : (!(ent->client->ps.stats[STAT_WEAPONS] & ((1 << WP_ROCKET_LAUNCHER) | (1 << WP_FLECHETTE) | (1 << WP_REPEATER))) ? MACRO_GET_WEAPON : MACRO_DEFEND_STAND);
+	else if (bot2_states[clientNum].role == ROLE_CHASE) bot2_states[clientNum].macroState = !myFlagAtBase ? MACRO_CHASE_THIEF : (!(ent->client->ps.stats[STAT_WEAPONS] & ((1 << WP_ROCKET_LAUNCHER) | (1 << WP_FLECHETTE) | (1 << WP_REPEATER) | (1 << WP_CONCUSSION))) ? MACRO_GET_WEAPON : MACRO_DEFEND_STAND);
 	else {
 		gentity_t* alliedFC = NULL;
 		for (int i = 0; i < MAX_CLIENTS; i++) if (g_entities[i].inuse && g_entities[i].client && g_entities[i].client->sess.sessionTeam == botTeam && g_entities[i].client->ps.powerups[enemyFlagItem]) { alliedFC = &g_entities[i]; break; }
@@ -351,7 +368,7 @@ void Bot2_Think(int clientNum, int time) {
 		}
 	}
 
-	vec3_t targetOrigin = { 0,0,0 }, aimDir;
+	vec3_t targetOrigin = { 0,0,0 }, aimDir, lead;
 	qboolean lockAim = qfalse, wantsToShoot = qfalse, isShootingMine = qfalse;
 	gentity_t* combatTarget = NULL;
 	int currentMineCount = 0;
@@ -451,47 +468,57 @@ void Bot2_Think(int clientNum, int time) {
 		if (myFlag && enemyFlag) {
 			if (enemy) {
 				vec3_t bestEvasionSpot;
-				float bestDistance = -1.0f;
+				float bestScore = -999999.0f;
 				qboolean foundValidSpot = qfalse;
 
-				for (int i = 0; i < 8; i++) {
-					float angle = (i * 45.0f) * (M_PI / 180.0f);
-					vec3_t testPos;
+				float checkRadii[] = { 300.0f, 600.0f, 900.0f };
 
-					testPos[0] = myFlag->s.origin[0] + cos(angle) * baseRadius;
-					testPos[1] = myFlag->s.origin[1] + sin(angle) * baseRadius;
-					testPos[2] = myFlag->s.origin[2];
+				for (int r = 0; r < 3; r++) {
+					for (int i = 0; i < 8; i++) {
+						float angle = (i * 45.0f) * (M_PI / 180.0f);
+						vec3_t testPos;
 
-					vec3_t floorTraceEnd;
-					VectorCopy(testPos, floorTraceEnd);
-					floorTraceEnd[2] -= 512.0f;
+						testPos[0] = ent->client->ps.origin[0] + cos(angle) * checkRadii[r];
+						testPos[1] = ent->client->ps.origin[1] + sin(angle) * checkRadii[r];
+						testPos[2] = ent->client->ps.origin[2] + 32.0f;
 
-					trace_t floorTr;
-					trap->Trace(&floorTr, testPos, NULL, NULL, floorTraceEnd, ENTITYNUM_NONE, MASK_SOLID, qfalse, 0, 0);
-					VectorCopy(floorTr.endpos, testPos);
-					testPos[2] += 24.0f;
+						vec3_t floorTraceEnd;
+						VectorCopy(testPos, floorTraceEnd);
+						floorTraceEnd[2] -= 512.0f;
 
-					trace_t solidTr;
-					vec3_t mins = { -15, -15, -24 };
-					vec3_t maxs = { 15, 15, 32 };
-					trap->Trace(&solidTr, testPos, mins, maxs, testPos, ENTITYNUM_NONE, MASK_PLAYERSOLID, qfalse, 0, 0);
+						trace_t floorTr;
+						trap->Trace(&floorTr, testPos, NULL, NULL, floorTraceEnd, ENTITYNUM_NONE, MASK_SOLID, qfalse, 0, 0);
+						VectorCopy(floorTr.endpos, testPos);
+						testPos[2] += 24.0f;
 
-					qboolean isOnMesh = NavMesh_IsPointOnMesh(testPos);
-					qboolean isGeometryClear = (!solidTr.startsolid && !solidTr.allsolid);
+						trace_t solidTr;
+						vec3_t mins = { -15, -15, -24 };
+						vec3_t maxs = { 15, 15, 32 };
+						trap->Trace(&solidTr, testPos, mins, maxs, testPos, ENTITYNUM_NONE, MASK_PLAYERSOLID, qfalse, 0, 0);
 
-					if (isGeometryClear && isOnMesh) {
-						float distFromEnemy = Distance(testPos, enemy->client->ps.origin);
-						if (distFromEnemy > bestDistance) {
-							bestDistance = distFromEnemy;
-							VectorCopy(testPos, bestEvasionSpot);
-							foundValidSpot = qtrue;
+						qboolean isOnMesh = NavMesh_IsPointOnMesh(testPos);
+						qboolean isGeometryClear = (!solidTr.startsolid && !solidTr.allsolid);
+
+						if (isGeometryClear && isOnMesh) {
+							float distFromEnemy = Distance(testPos, enemy->client->ps.origin);
+							float distFromBase = Distance(testPos, myFlag->s.origin);
+							float currentEnemyDist = Distance(ent->client->ps.origin, enemy->client->ps.origin);
+							
+							if (distFromEnemy > currentEnemyDist && distFromBase < baseRadius * 1.5f) {
+								float score = distFromEnemy - (distFromBase * 0.5f);
+								if (score > bestScore) {
+									bestScore = score;
+									VectorCopy(testPos, bestEvasionSpot);
+									foundValidSpot = qtrue;
+								}
+							}
 						}
 					}
 				}
 
 				if (foundValidSpot) {
 					VectorCopy(bestEvasionSpot, targetOrigin);
-					if (level.time % 1000 < 50) trap->Print("[%s] FC Turtling - evading to valid node %.0f units from enemy.\n", ent->client->pers.netname, bestDistance);
+					if (level.time % 1000 < 50) trap->Print("[%s] FC Turtling - evading to valid node. Score: %.0f\n", ent->client->pers.netname, bestScore);
 				}
 				else {
 					VectorCopy(myFlag->s.origin, targetOrigin);
@@ -502,7 +529,6 @@ void Bot2_Think(int clientNum, int time) {
 			}
 		}
 	} break;
-	case MACRO_HUNT_TRIPMINES: break; // Handled below in targeting block
 	}
 
 	// --- TARGETING & WEAPON FIRE LOGIC ---
@@ -526,85 +552,101 @@ void Bot2_Think(int clientNum, int time) {
 	else {
 		// General combat scanning
 		if (!combatTarget && !(bot2_states[clientNum].role == ROLE_OFFENSE && bot2_states[clientNum].macroState != MACRO_CAMP_REGEN)) {
-			combatTarget = GetNearestEnemy(ent->client->ps.origin, botTeam, 1200.0f); // TWEAK: Tighter global engagement range
+			combatTarget = GetNearestEnemy(ent->client->ps.origin, botTeam, 1200.0f);
 		}
 
 		if (combatTarget) {
 			vec3_t myEye = { ent->client->ps.origin[0], ent->client->ps.origin[1], ent->client->ps.origin[2] + ent->client->ps.viewheight };
 			trace_t tr; trap->Trace(&tr, myEye, NULL, NULL, combatTarget->client->ps.origin, ent->s.number, MASK_PLAYERSOLID, qfalse, 0, 0);
-			if (tr.fraction == 1.0f || tr.entityNum == combatTarget->s.number) wantsToShoot = qtrue;
-		}
+			qboolean hasLOS = (tr.fraction == 1.0f || tr.entityNum == combatTarget->s.number);
+			float dist = Distance(ent->client->ps.origin, combatTarget->client->ps.origin);
+			qboolean weaponEffective = (dist <= 1000.0f);
 
-		if (wantsToShoot) {
-			qboolean triggerPulled = qfalse;
-
-			// Handle charge-ups and fire modes
+			// WEAPON SPECIFIC STATE MACHINES
 			if (ucmd.weapon == WP_BRYAR_PISTOL) {
-				if (level.time - bot2_states[clientNum].chargeTimer < 1500) { ucmd.buttons |= BUTTON_ALT_ATTACK; } // Charging (Silent aim)
-				else if (level.time - bot2_states[clientNum].chargeTimer >= 1600) { bot2_states[clientNum].chargeTimer = level.time; triggerPulled = qtrue; }
-			}
-			else if (ucmd.weapon == WP_REPEATER) {
-				if (Bot2_GetAmmo(ent, WP_REPEATER) >= 30) ucmd.buttons |= BUTTON_ALT_ATTACK; else ucmd.buttons |= BUTTON_ATTACK;
-				triggerPulled = qtrue;
-			}
-			else {
-				if (ucmd.weapon == WP_FLECHETTE) ucmd.buttons |= BUTTON_ALT_ATTACK; else ucmd.buttons |= BUTTON_ATTACK;
-				triggerPulled = qtrue;
-			}
-
-			// TWEAK: Only SNAP aim on the exact frame the bot fires the weapon
-			if (triggerPulled && combatTarget) {
-				vec3_t myEye = { ent->client->ps.origin[0], ent->client->ps.origin[1], ent->client->ps.origin[2] + ent->client->ps.viewheight };
-				vec3_t lead; Bot2_GetLeadOrigin(ent, combatTarget, lead);
-
-				// TWEAK: Splash Weapon Prediction (Aim at ground)
-				qboolean isSplash = (ucmd.weapon == WP_ROCKET_LAUNCHER || ucmd.weapon == WP_CONCUSSION || ucmd.weapon == WP_FLECHETTE || (ucmd.weapon == WP_REPEATER && (ucmd.buttons & BUTTON_ALT_ATTACK)));
-				if (isSplash) {
-					vec3_t traceEnd; VectorCopy(lead, traceEnd); traceEnd[2] -= 1024.0f;
-					trace_t floorTr; trap->Trace(&floorTr, lead, NULL, NULL, traceEnd, combatTarget->s.number, MASK_SOLID, qfalse, 0, 0);
-
-					if (floorTr.fraction < 1.0f && (lead[2] - floorTr.endpos[2]) < 250.0f) {
-						VectorCopy(floorTr.endpos, lead); // Snap crosshair to the ground beneath them
+				if (weaponEffective) {
+					// State 1 (Charging): Apply BUTTON_ALT_ATTACK. Do not alter angles.
+					ucmd.buttons |= BUTTON_ALT_ATTACK;
+					
+					int chargeDuration = 0;
+					if (ent->client->ps.weaponstate == WEAPON_CHARGING_ALT) {
+						chargeDuration = level.time - ent->client->ps.weaponChargeTime;
 					}
-					else {
-						lead[2] -= 24.0f; // Target is high in the air, aim at their feet instead
+
+					// State 2 (The Flick): Max charge threshold hit, take over for exactly one frame.
+					if (chargeDuration >= 1000 && hasLOS) {
+						// Get perfect interception point for this exact millisecond
+						Bot2_GetLeadOrigin(ent, combatTarget, lead, qtrue);
+						VectorSubtract(lead, myEye, aimDir);
+						
+						vec3_t flickAngles;
+						vectoangles(aimDir, flickAngles);
+						
+						// Snap the bot_cmd->angles to those aim angles manually, then set a flag to prevent movement engine from overriding
+						ucmd.angles[PITCH] = ANGLE2SHORT(flickAngles[PITCH]) - ent->client->ps.delta_angles[PITCH];
+						ucmd.angles[YAW] = ANGLE2SHORT(flickAngles[YAW]) - ent->client->ps.delta_angles[YAW];
+						
+						// By leaving lockAim = qfalse, the movement engine might overwrite. We set a macro state override or just use lockAim.
+						// The movement engine handles lockAim=qtrue by setting angles to aimDir without smoothing.
+						// So we just set lockAim = qtrue and aimDir.
+						lockAim = qtrue;
+						
+						// Remove the BUTTON_ALT_ATTACK flag to release the shot
+						ucmd.buttons &= ~BUTTON_ALT_ATTACK;
 					}
 				}
-
-				lockAim = qtrue;
-				VectorSubtract(lead, myEye, aimDir);
 			}
-		}
-		else {
-			bot2_states[clientNum].chargeTimer = level.time;
-		}
-	}
+			else if (hasLOS && weaponEffective) {
+				// Always track intent if LOS is clear
+				if (bot2_states[clientNum].combatIntentTime == 0) {
+					bot2_states[clientNum].combatIntentTime = level.time;
+				}
 
-	int currentAttackButtons = (ucmd.buttons & (BUTTON_ATTACK | BUTTON_ALT_ATTACK));
-	int lastAttackButtons = (botstates[clientNum]->lastucmd.buttons & (BUTTON_ATTACK | BUTTON_ALT_ATTACK));
+				// OTHER WEAPONS
+				int intentDuration = level.time - bot2_states[clientNum].combatIntentTime;
+				if (intentDuration >= 0) { // Instant flick window
+					qboolean synced = Bot2_GetLeadOrigin(ent, combatTarget, lead, qtrue);
+					
+					if (synced) {
+						lockAim = qtrue; 
+						VectorSubtract(lead, myEye, aimDir);
 
-	if (currentAttackButtons && !lastAttackButtons) {
-		if (!(ucmd.weapon == WP_REPEATER || ucmd.weapon == WP_FLECHETTE || ucmd.weapon == WP_BLASTER || ucmd.weapon == WP_BRYAR_PISTOL) && ucmd.weapon != WP_TRIP_MINE) {
-			vec3_t forward, end, start; trace_t tr;
-			AngleVectors(ent->client->ps.viewangles, forward, NULL, NULL);
-			VectorCopy(ent->client->ps.origin, start); start[2] += ent->client->ps.viewheight;
-			VectorMA(start, 4096.0f, forward, end);
-			vec3_t zeroVec = { 0,0,0 };
-			trap->Trace(&tr, start, zeroVec, zeroVec, end, ent->s.number, MASK_SHOT, qfalse, 0, 0);
-
-			if (tr.entityNum < MAX_CLIENTS && g_entities[tr.entityNum].inuse && g_entities[tr.entityNum].client && g_entities[tr.entityNum].client->sess.sessionTeam != botTeam) {
-				trap->Print("[%s | FIRED %d] Hit Predicted on %s!\n", ent->client->pers.netname, ucmd.weapon, g_entities[tr.entityNum].client->pers.netname);
+						if (ucmd.weapon == WP_REPEATER) {
+							if (Bot2_GetAmmo(ent, WP_REPEATER) >= 30) ucmd.buttons |= BUTTON_ALT_ATTACK; else ucmd.buttons |= BUTTON_ATTACK;
+						}
+						else if (ucmd.weapon == WP_ROCKET_LAUNCHER || ucmd.weapon == WP_CONCUSSION || ucmd.weapon == WP_DEMP2 || ucmd.weapon == WP_BOWCASTER || ucmd.weapon == WP_BLASTER) {
+							ucmd.buttons |= BUTTON_ATTACK;
+						}
+						else if (ucmd.weapon == WP_FLECHETTE) {
+							if (Bot2_GetAmmo(ent, WP_FLECHETTE) >= 15) ucmd.buttons |= BUTTON_ALT_ATTACK; else ucmd.buttons |= BUTTON_ATTACK;
+						}
+						else {
+							ucmd.buttons |= BUTTON_ATTACK;
+						}
+					}
+				}
+			} else {
+				bot2_states[clientNum].combatIntentTime = 0;
 			}
-			else {
-				trap->Print("[%s | FIRED %d] Missed / Hit Geometry.\n", ent->client->pers.netname, ucmd.weapon);
-			}
+		} else {
+			bot2_states[clientNum].combatIntentTime = 0;
 		}
 	}
 
 	ent->client->ps.fd.forcePowersKnown |= (1 << FP_SPEED) | (1 << FP_ABSORB) | (1 << FP_TEAM_FORCE) | (1 << FP_TEAM_HEAL) | (1 << FP_LEVITATION);
 	ent->client->ps.fd.forcePowerLevel[FP_SPEED] = ent->client->ps.fd.forcePowerLevel[FP_ABSORB] = ent->client->ps.fd.forcePowerLevel[FP_TEAM_FORCE] = ent->client->ps.fd.forcePowerLevel[FP_TEAM_HEAL] = ent->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 3;
 
-	qboolean wantsSpeed = !(bot2_states[clientNum].macroState == MACRO_CAMP_REGEN || bot2_states[clientNum].macroState == MACRO_HUNT_TRIPMINES);
+	qboolean wantsSpeed = qtrue;
+	if (bot2_states[clientNum].macroState == MACRO_CAMP_REGEN || bot2_states[clientNum].macroState == MACRO_HUNT_TRIPMINES) {
+		wantsSpeed = qfalse;
+	}
+	else if (bot2_states[clientNum].macroState == MACRO_GET_WEAPON && Distance(ent->client->ps.origin, targetOrigin) < 400.0f) {
+		wantsSpeed = qfalse;
+	}
+	else if (bot2_states[clientNum].macroState == MACRO_CHASE_THIEF && !combatTarget && Distance(ent->client->ps.origin, targetOrigin) < 400.0f) {
+		// Walking to pick up a dropped flag or intercepting at base (no active LOS combat target)
+		wantsSpeed = qfalse;
+	}
 
 	// Absorb: activate when carrying the flag or inside the enemy base area while fetching.
 	// baseRadius (40% of flag-to-flag dist) reuses the existing spatial threshold.
@@ -659,4 +701,4 @@ void Bot2_Think(int clientNum, int time) {
 
 	botstates[clientNum]->lastucmd = ucmd; trap->BotUserCommand(ent->s.number, &ucmd);
 }
-                                                                                                                                                                                                                                                                                                                               
+                                                                                                                                                                                                                                                                                                                               

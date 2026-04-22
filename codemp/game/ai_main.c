@@ -94,6 +94,7 @@ vmCvar_t bot_debugmessages;
 
 vmCvar_t bot_attachments;
 vmCvar_t bot_camp;
+vmCvar_t bot_telemetry;
 
 vmCvar_t bot_wp_info;
 vmCvar_t bot_wp_edit;
@@ -7635,6 +7636,7 @@ int BotAISetup( int restart ) {
 
 	trap->Cvar_Register(&bot_attachments, "bot_attachments", "1", 0);
 	trap->Cvar_Register(&bot_camp, "bot_camp", "1", 0);
+	trap->Cvar_Register(&bot_telemetry, "bot_telemetry", "0", CVAR_ARCHIVE);
 
 	trap->Cvar_Register(&bot_wp_info, "bot_wp_info", "1", 0);
 	trap->Cvar_Register(&bot_wp_edit, "bot_wp_edit", "0", CVAR_CHEAT);

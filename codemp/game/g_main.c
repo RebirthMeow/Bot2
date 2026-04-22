@@ -429,6 +429,11 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 		G_SoundIndex( "sound/player/gurp2.wav" );
 	}
 
+	// Register bot_telemetry unconditionally so it is always accessible
+	// regardless of whether bot_enable is set. BotAISetup will re-register
+	// it safely if bots are enabled — Q3 double-registration is a no-op.
+	{ static vmCvar_t s_bot_telemetry; trap->Cvar_Register(&s_bot_telemetry, "bot_telemetry", "0", CVAR_ARCHIVE); }
+
 	if ( trap->Cvar_VariableIntegerValue( "bot_enable" ) ) {
 		BotAISetup( restart );
 		BotAILoadMap( restart );

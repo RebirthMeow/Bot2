@@ -387,6 +387,7 @@ extern vmCvar_t bot_debugmessages;
 
 extern vmCvar_t bot_attachments;
 extern vmCvar_t bot_camp;
+extern vmCvar_t bot_telemetry;
 
 extern vmCvar_t bot_wp_info;
 extern vmCvar_t bot_wp_edit;
