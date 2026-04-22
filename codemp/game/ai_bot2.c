@@ -72,7 +72,12 @@ static gentity_t* GetNearestItem(vec3_t pos, const char** classnames, int numCla
 	for (int i = 0; i < numClasses; i++) {
 		gentity_t* found = NULL;
 		while ((found = G_Find(found, FOFS(classname), classnames[i])) != NULL) {
-			if (found->r.linked && Distance(pos, found->s.origin) < bestDist) {
+			// Skip items that are currently respawning or otherwise disabled
+			if (!found->r.linked || (found->s.eFlags & EF_NODRAW) || (found->s.eFlags & EF_ITEMPLACEHOLDER)) {
+				continue;
+			}
+			
+			if (Distance(pos, found->s.origin) < bestDist) {
 				bestDist = Distance(pos, found->s.origin); bestItem = found;
 			}
 		}
@@ -103,6 +108,33 @@ static int Bot2_GetAmmo(gentity_t* ent, int weapon) {
 	case WP_TRIP_MINE: return ent->client->ps.ammo[8];
 	}
 	return 0;
+}
+
+// Builds a prioritized list of weapons and ammo to search for based on current inventory
+static int Bot2_PopulateItemSearch(gentity_t* ent, const char** outList, int maxItems, qboolean heavyOnly) {
+	int count = 0;
+	int weapons = ent->client->ps.stats[STAT_WEAPONS];
+
+	#define ADD_SEARCH(wpn, wClass, aClass, minAmmo) \
+		if (count < maxItems) { \
+			if (!(weapons & (1 << wpn))) { outList[count++] = wClass; } \
+			else if (aClass && Bot2_GetAmmo(ent, wpn) < minAmmo) { outList[count++] = aClass; } \
+		}
+
+	// High priority heavy weapons
+	ADD_SEARCH(WP_ROCKET_LAUNCHER, "weapon_rocket_launcher", "ammo_rockets", 10);
+	ADD_SEARCH(WP_FLECHETTE, "weapon_flechette", "ammo_metallic_bolts", 60);
+	ADD_SEARCH(WP_REPEATER, "weapon_repeater", "ammo_metallic_bolts", 90);
+	
+	if (!heavyOnly) {
+		ADD_SEARCH(WP_CONCUSSION, "weapon_concussion_rifle", "ammo_metallic_bolts", 20);
+		ADD_SEARCH(WP_BOWCASTER, "weapon_bowcaster", "ammo_powercell", 100);
+		ADD_SEARCH(WP_BLASTER, "weapon_blaster", "ammo_blaster", 100);
+		ADD_SEARCH(WP_DEMP2, "weapon_demp2", "ammo_powercell", 100);
+	}
+	
+	#undef ADD_SEARCH
+	return count;
 }
 
 // ==============================================================================
@@ -241,6 +273,13 @@ void Bot2_Think(int clientNum, int time) {
 
 	// --- ROLE TAGGING ---
 	bot2_states[clientNum].role = GetBotRole(clientNum, ent->client->sess.sessionTeam);
+	
+	// Test override: 1 = Offense, 2 = Chase, 3 = Base
+	int forceRole = trap->Cvar_VariableIntegerValue("bot_forcerole");
+	if (forceRole > 0 && forceRole <= 3) {
+		bot2_states[clientNum].role = forceRole - 1;
+	}
+
 	const char* roleTags[] = { "[OFFENSE]", "[CHASE]", "[BASE]" }; char userinfo[MAX_INFO_STRING];
 	trap->GetUserinfo(clientNum, userinfo, sizeof(userinfo)); char* name = Info_ValueForKey(userinfo, "name");
 
@@ -314,6 +353,14 @@ void Bot2_Think(int clientNum, int time) {
 		}
 	}
 
+	// Test override: Weapon Lock
+	int forceWpn = trap->Cvar_VariableIntegerValue("bot_forceweapon");
+	if (forceWpn > 0) {
+		ucmd.weapon = forceWpn;
+		ent->client->ps.stats[STAT_WEAPONS] |= (1 << forceWpn);
+		for (int i = 0; i < 16; i++) ent->client->ps.ammo[i] = 999; // Unlimited ammo for testing
+	}
+
 	// --- MACRO TACTICS ENGINE ---
 	macroState_t oldMacro = bot2_states[clientNum].macroState;
 	gentity_t* redFlag = G_Find(NULL, FOFS(classname), "team_CTF_redflag"), * blueFlag = G_Find(NULL, FOFS(classname), "team_CTF_blueflag");
@@ -324,16 +371,23 @@ void Bot2_Think(int clientNum, int time) {
 	float totalFlagDist = (myFlag && enemyFlag) ? Distance(myFlag->s.origin, enemyFlag->s.origin) : 5000.0f;
 	float baseRadius = totalFlagDist * 0.40f;
 
-	gentity_t* droppedMyFlag = NULL, * fSearch = NULL;
+	gentity_t* droppedMyFlag = NULL, * droppedEnemyFlag = NULL, * fSearch = NULL;
 	while ((fSearch = G_Find(fSearch, FOFS(classname), (botTeam == TEAM_RED) ? "team_CTF_redflag" : "team_CTF_blueflag")) != NULL) {
 		if ((fSearch->flags & FL_DROPPED_ITEM) && fSearch->r.linked) { droppedMyFlag = fSearch; break; }
+	}
+	fSearch = NULL;
+	while ((fSearch = G_Find(fSearch, FOFS(classname), (botTeam == TEAM_RED) ? "team_CTF_blueflag" : "team_CTF_redflag")) != NULL) {
+		if ((fSearch->flags & FL_DROPPED_ITEM) && fSearch->r.linked) { droppedEnemyFlag = fSearch; break; }
 	}
 
 	qboolean enemyHasOurFlag = qfalse;
 	for (int i = 0; i < MAX_CLIENTS; i++) if (g_entities[i].inuse && g_entities[i].client && g_entities[i].health > 0 && g_entities[i].client->sess.sessionTeam != botTeam && g_entities[i].client->ps.powerups[(botTeam == TEAM_RED) ? PW_REDFLAG : PW_BLUEFLAG]) { enemyHasOurFlag = qtrue; break; }
 
+	qboolean weHaveEnemyFlag = qfalse;
+	for (int i = 0; i < MAX_CLIENTS; i++) if (g_entities[i].inuse && g_entities[i].client && g_entities[i].health > 0 && g_entities[i].client->sess.sessionTeam == botTeam && g_entities[i].client->ps.powerups[(botTeam == TEAM_RED) ? PW_BLUEFLAG : PW_REDFLAG]) { weHaveEnemyFlag = qtrue; break; }
+
 	qboolean myFlagAtBase = (myFlag && myFlag->r.linked && (myFlag->flags & FL_DROPPED_ITEM) == 0 && myFlag->parent == NULL && !enemyHasOurFlag && !droppedMyFlag);
-	qboolean enemyFlagAtBase = (enemyFlag && enemyFlag->r.linked && (enemyFlag->flags & FL_DROPPED_ITEM) == 0 && enemyFlag->parent == NULL);
+	qboolean enemyFlagAtBase = (enemyFlag && enemyFlag->r.linked && (enemyFlag->flags & FL_DROPPED_ITEM) == 0 && enemyFlag->parent == NULL && !weHaveEnemyFlag && !droppedEnemyFlag);
 
 	if (hasFlag) {
 		// Offense Survival Trigger: We have the flag, we are in our base radius, but our flag is missing. Turtle and evade.
@@ -444,22 +498,67 @@ void Bot2_Think(int clientNum, int time) {
 		if (item) VectorCopy(item->s.origin, targetOrigin);
 	} break;
 	case MACRO_CAMP_REGEN: {
-		gentity_t* enemy = GetNearestEnemy(ent->client->ps.origin, botTeam, 1000.0f); // TWEAK: Tighter Loiter range
+		gentity_t* enemy = GetNearestEnemy(ent->client->ps.origin, botTeam, 1000.0f);
 		if (enemy) {
-			VectorCopy(enemy->client->ps.origin, targetOrigin);
-			combatTarget = enemy;
+			combatTarget = enemy; // Engage, but do NOT pursue (targetOrigin is not updated to enemy)
 		}
-		else {
+		
+		gentity_t* regenItem = NULL;
+		
+		// 1. Search for Health/Armor if injured
+		if (ent->health < ent->client->ps.stats[STAT_MAX_HEALTH] || ent->client->ps.stats[STAT_ARMOR] < 100) {
+			const char* regenW[] = { "item_medpac", "item_medpac_big", "item_shield_sm_instant", "item_shield_lrg_instant" };
+			regenItem = GetNearestItem(ent->client->ps.origin, regenW, 4, 1000.0f);
+		}
+		
+		// 2. Search for weapons if healthy or no health found
+		if (!regenItem) {
 			const char* allW[] = { "weapon_rocket_launcher", "weapon_flechette", "weapon_repeater", "weapon_bowcaster", "weapon_blaster", "weapon_disruptor", "weapon_demp2", "weapon_concussion_rifle" };
-			gentity_t* wpn = GetNearestItem(ent->client->ps.origin, allW, 8, 2000.0f);
-			if (wpn) {
-				VectorCopy(wpn->s.origin, targetOrigin);
+			regenItem = GetNearestItem(ent->client->ps.origin, allW, 8, 1000.0f);
+		}
+
+		if (regenItem) {
+			VectorCopy(regenItem->s.origin, targetOrigin);
+		}
+		else if (enemyFlag) {
+			// 3. Dynamic Loiter: sweep a rotating pattern to find a valid NavMesh node near the flag
+			vec3_t bestLoiterSpot;
+			float bestDist = 999999.0f;
+			qboolean foundValidSpot = qfalse;
+
+			float pa = (level.time / 2000.0f) + (clientNum * 1.5f); // Rotating baseline
+			
+			for (int i = 0; i < 4; i++) {
+				float angle = pa + (i * 90.0f) * (M_PI / 180.0f);
+				vec3_t testPos;
+
+				testPos[0] = enemyFlag->s.origin[0] + cos(angle) * 350.0f;
+				testPos[1] = enemyFlag->s.origin[1] + sin(angle) * 350.0f;
+				testPos[2] = enemyFlag->s.origin[2] + 32.0f;
+
+				vec3_t floorTraceEnd;
+				VectorCopy(testPos, floorTraceEnd);
+				floorTraceEnd[2] -= 512.0f;
+
+				trace_t floorTr;
+				trap->Trace(&floorTr, testPos, NULL, NULL, floorTraceEnd, ENTITYNUM_NONE, MASK_SOLID, qfalse, 0, 0);
+				VectorCopy(floorTr.endpos, testPos);
+				testPos[2] += 24.0f;
+
+				if (NavMesh_IsPointOnMesh(testPos)) {
+					float dist = Distance(ent->client->ps.origin, testPos);
+					if (dist < bestDist) {
+						bestDist = dist;
+						VectorCopy(testPos, bestLoiterSpot);
+						foundValidSpot = qtrue;
+					}
+				}
 			}
-			else if (enemyFlag) {
-				float pa = (level.time / 1500.0f) + (clientNum * 0.5f);
-				targetOrigin[0] = enemyFlag->s.origin[0] + cos(pa) * 450.0f;
-				targetOrigin[1] = enemyFlag->s.origin[1] + sin(pa) * 450.0f;
-				targetOrigin[2] = enemyFlag->s.origin[2];
+			
+			if (foundValidSpot) {
+				VectorCopy(bestLoiterSpot, targetOrigin);
+			} else {
+				VectorCopy(enemyFlag->s.origin, targetOrigin); // Fallback
 			}
 		}
 	} break;
