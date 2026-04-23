@@ -468,7 +468,6 @@ typedef struct clientSession_s {
 	int			siegeDesiredTeam;
 
 	char		IP[NET_ADDRSTRMAXLEN];
-	qboolean	isBot2;
 } clientSession_t;
 
 // playerstate mGameFlags

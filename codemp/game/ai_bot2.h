@@ -55,11 +55,13 @@ typedef struct bot2_state_s {
 	int lastAimTime, combatIntentTime;
 	char tele_lastAimString[256];
 	int tele_lastFireTime;
+	int tele_lastHits;
 	} bot2_state_t;
 extern bot2_state_t bot2_states[MAX_CLIENTS];
 
 void Bot2_ClearState(int clientNum);
 void Bot2_Think(int clientNum, int time);
+void Bot2_UpdateManagedBots(void);
 
 // Navigation & Physics Helpers
 qboolean SimulatePmoveTrajectory(gentity_t* ent, playerState_t* in_ps, float start_yaw, int strafeDir, float angle_fraction, float max_run_speed, vec3_t out_pmove_land_pos, playerState_t* out_ps, qboolean lockAim, vec3_t aimDir);

@@ -4583,16 +4583,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
 	}
 	
 	// ======================================================================
-	// BOT TELEMETRY: TRUE HIT DETECTION (SINGLE LINE)
-	// ======================================================================
-	if (attacker && attacker->client && targ && targ->client && damage > 0) {
-		if (botstates[attacker->s.number]) {
-			Bot2_PrintTelemetry(2, "%s -> [RESULT] TRUE HIT on %s for %d dmg!\n",
-				bot2_states[attacker->s.number].tele_lastAimString,
-				targ->client->pers.netname,
-				damage);
-		}
-	}
+	// BOT TELEMETRY: REMOVED (DECOUPLED)
 	// ======================================================================
 	// shootable doors / buttons don't actually have any health
 

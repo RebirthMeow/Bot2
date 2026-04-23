@@ -7535,6 +7535,9 @@ int BotAIStartFrame(int time) {
 //	static int botlib_residual;
 	static int lastbotthink_time;
 
+	extern void Bot2_UpdateManagedBots(void);
+	Bot2_UpdateManagedBots();
+
 	if (gUpdateVars < level.time)
 	{
 		trap->Cvar_Update(&bot_pvstype);
@@ -7578,7 +7581,7 @@ int BotAIStartFrame(int time) {
 		if( !botstates[i] || !botstates[i]->inuse ) {
 			continue;
 		}
-		if (g_entities[i].client->sess.isBot2) {
+		if (botstates[i]->customThink) {
 			continue; // COMPLETELY BYPASS LEGACY AI
 		}
 		//
@@ -7602,8 +7605,8 @@ int BotAIStartFrame(int time) {
 			continue;
 		}
 
-		if (g_entities[i].client->sess.isBot2) {
-			Bot2_Think(i, time);
+		if (botstates[i]->customThink) {
+			botstates[i]->customThink(i, time);
 			continue; 
 		}
 

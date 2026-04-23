@@ -33,6 +33,28 @@ void Bot2_ClearState(int clientNum) {
 	}
 }
 
+// Scans all connected clients and assigns the Bot2_Think hook to any bot named *_v2
+void Bot2_UpdateManagedBots(void) {
+	for (int i = 0; i < MAX_CLIENTS; i++) {
+		gentity_t* ent = &g_entities[i];
+		// Make sure they are a bot and actively connected
+		if (ent->inuse && ent->client && (ent->r.svFlags & SVF_BOT)) {
+			if (botstates[i] && botstates[i]->customThink != Bot2_Think) {
+				char userinfo[MAX_INFO_STRING];
+				trap->GetUserinfo(i, userinfo, sizeof(userinfo));
+				char* name = Info_ValueForKey(userinfo, "name");
+				
+				// Identify Bot2 via naming convention or cvar override
+				int forceBot2 = trap->Cvar_VariableIntegerValue("bot_forcebot2");
+				if (forceBot2 > 0 || (name && strstr(name, "_v2"))) {
+					botstates[i]->customThink = Bot2_Think;
+					trap->Print("Bot2 AI initialized for %s (Slot %d)\n", name ? name : "Unknown", i);
+				}
+			}
+		}
+	}
+}
+
 // Telemetry Queue Filter (Bitmask via bot_telemetry CVAR)
 // Bit 1 (1) = Movement/Jump, Bit 2 (2) = Combat/Aiming
 void Bot2_PrintTelemetry(int mode, const char* format, ...) {
@@ -732,8 +754,17 @@ void Bot2_Think(int clientNum, int time) {
 		}
 	}
 
-	ent->client->ps.fd.forcePowersKnown |= (1 << FP_SPEED) | (1 << FP_ABSORB) | (1 << FP_TEAM_FORCE) | (1 << FP_TEAM_HEAL) | (1 << FP_LEVITATION);
-	ent->client->ps.fd.forcePowerLevel[FP_SPEED] = ent->client->ps.fd.forcePowerLevel[FP_ABSORB] = ent->client->ps.fd.forcePowerLevel[FP_TEAM_FORCE] = ent->client->ps.fd.forcePowerLevel[FP_TEAM_HEAL] = ent->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 3;
+	ent->client->ps.fd.forcePowersKnown |= (1 << FP_LEVITATION) | (1 << FP_PUSH) | (1 << FP_PULL) | (1 << FP_SPEED) | (1 << FP_ABSORB) | (1 << FP_PROTECT) | (1 << FP_TEAM_HEAL) | (1 << FP_SABER_OFFENSE) | (1 << FP_SABER_DEFENSE) | (1 << FP_TEAM_FORCE);
+	ent->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 3;
+	ent->client->ps.fd.forcePowerLevel[FP_PUSH] = 3;
+	ent->client->ps.fd.forcePowerLevel[FP_PULL] = 3;
+	ent->client->ps.fd.forcePowerLevel[FP_SPEED] = 3;
+	ent->client->ps.fd.forcePowerLevel[FP_ABSORB] = 3;
+	ent->client->ps.fd.forcePowerLevel[FP_PROTECT] = 3;
+	ent->client->ps.fd.forcePowerLevel[FP_TEAM_HEAL] = 3;
+	ent->client->ps.fd.forcePowerLevel[FP_SABER_OFFENSE] = 1;
+	ent->client->ps.fd.forcePowerLevel[FP_SABER_DEFENSE] = 3;
+	ent->client->ps.fd.forcePowerLevel[FP_TEAM_FORCE] = 3;
 
 	qboolean wantsSpeed = qtrue;
 	if (bot2_states[clientNum].macroState == MACRO_CAMP_REGEN || bot2_states[clientNum].macroState == MACRO_HUNT_TRIPMINES) {
@@ -797,6 +828,13 @@ void Bot2_Think(int clientNum, int time) {
 	}
 
 	Bot2_ExecuteMovement(clientNum, &ucmd, targetOrigin, aimDir, lockAim, wantsSpeed, hasFallback, fallbackOrigin);
+
+	// --- TELEMETRY: DECOUPLED HIT DETECTION ---
+	if (ent->client->accuracy_hits > bot2_states[clientNum].tele_lastHits) {
+		int hits = ent->client->accuracy_hits - bot2_states[clientNum].tele_lastHits;
+		Bot2_PrintTelemetry(2, "%s -> [RESULT] TRUE HIT for %d tick(s)!\n", bot2_states[clientNum].tele_lastAimString, hits);
+		bot2_states[clientNum].tele_lastHits = ent->client->accuracy_hits;
+	}
 
 	botstates[clientNum]->lastucmd = ucmd; trap->BotUserCommand(ent->s.number, &ucmd);
 }

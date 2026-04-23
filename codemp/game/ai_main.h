@@ -353,6 +353,7 @@ typedef struct bot_state_s
 	int					forceMove_Right;
 	int					forceMove_Up;
 	//end rww
+	void				(*customThink)(int clientNum, int time); // Hook for custom AI modules
 } bot_state_t;
 
 void *B_TempAlloc(int size);

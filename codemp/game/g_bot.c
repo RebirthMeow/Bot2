@@ -957,10 +957,6 @@ static void G_AddBot( const char *name, float skill, const char *team, int delay
 	if ( ClientConnect( clientNum, qtrue, qtrue ) )
 		return;
 
-	if ( g_isBot2Spawn ) {
-		bot->client->sess.isBot2 = qtrue;
-	}
-
 	if ( bot->client->sess.sessionTeam != preTeam )
 	{
 		trap->GetUserinfo( clientNum, userinfo, sizeof( userinfo ) );
