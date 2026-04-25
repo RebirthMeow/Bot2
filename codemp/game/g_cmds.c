@@ -3449,6 +3449,154 @@ void Cmd_NavCheck_f( gentity_t *ent ) {
 	}
 	}
 
+	// -----------------------------------------------------------------------
+	// Input recorder — writes to inputrecord.txt, only stores frames on change
+	// Usage:
+	//   recordinput         - start recording (auto-stops after 2048 changed frames)
+	//   recordinput stop    - stop and write file
+	// -----------------------------------------------------------------------
+
+#define INPUT_RECORD_MAX 2048
+
+typedef struct {
+	int   time;
+	int   fwd, rt, up;
+	int   weapon_cmd;
+	int   weapon_ps;
+	int   pm_flags;
+	int   groundEnt;
+	int   legsAnim;
+	float vel[3];
+	int   forceLev;
+} inputFrame_t;
+
+static inputFrame_t  s_inputBuf[INPUT_RECORD_MAX];
+static int           s_inputCount    = 0;
+static int           s_inputClient   = -1;
+static int           s_inputStartTime = 0;
+static qboolean      s_inputRecording = qfalse;
+
+// Returns qtrue if this frame differs from the previous one in anything meaningful
+static qboolean InputFrame_Changed( const inputFrame_t *prev, const inputFrame_t *cur ) {
+	if ( prev->fwd       != cur->fwd       ) return qtrue;
+	if ( prev->rt        != cur->rt        ) return qtrue;
+	if ( prev->up        != cur->up        ) return qtrue;
+	if ( prev->weapon_cmd!= cur->weapon_cmd) return qtrue;
+	if ( prev->weapon_ps != cur->weapon_ps ) return qtrue;
+	if ( prev->pm_flags  != cur->pm_flags  ) return qtrue;
+	if ( prev->groundEnt != cur->groundEnt ) return qtrue;
+	if ( prev->legsAnim  != cur->legsAnim  ) return qtrue;
+	return qfalse;
+}
+
+void G_RecordInputFrame( gentity_t *ent, usercmd_t *ucmd ) {
+	if ( !s_inputRecording || s_inputClient < 0 ) return;
+	if ( !ent || !ent->client ) return;
+	if ( ent->s.number != s_inputClient ) return;
+	if ( s_inputCount >= INPUT_RECORD_MAX ) {
+		s_inputRecording = qfalse;
+		trap->Print( "RecordInput: buffer full, recording stopped.\n" );
+		return;
+	}
+
+	playerState_t *ps = &ent->client->ps;
+
+	inputFrame_t cur;
+	cur.time        = level.time;
+	cur.fwd         = (int)ucmd->forwardmove;
+	cur.rt          = (int)ucmd->rightmove;
+	cur.up          = (int)ucmd->upmove;
+	cur.weapon_cmd  = (int)ucmd->weapon;
+	cur.weapon_ps   = (int)ps->weapon;
+	cur.pm_flags    = ps->pm_flags;
+	cur.groundEnt   = ps->groundEntityNum;
+	cur.legsAnim    = ps->legsAnim;
+	cur.vel[0]      = ps->velocity[0];
+	cur.vel[1]      = ps->velocity[1];
+	cur.vel[2]      = ps->velocity[2];
+	cur.forceLev    = (int)ps->fd.forcePowerLevel[FP_LEVITATION];
+
+	// Always store first frame; after that only store on change
+	if ( s_inputCount == 0 || InputFrame_Changed( &s_inputBuf[s_inputCount - 1], &cur ) ) {
+		s_inputBuf[s_inputCount++] = cur;
+	}
+}
+
+static void G_WriteInputRecord( gentity_t *ent ) {
+	if ( s_inputCount == 0 ) {
+		trap->SendServerCommand( ent->s.number, "print \"RecordInput: nothing recorded.\n\"" );
+		return;
+	}
+
+	// Print to server console / qconsole.log — no reliable buffer, no file I/O needed
+	trap->Print( va( "RecordInput: %d change-frames  PMF_JUMP_HELD=0x%X  PMF_STUCK_TO_WALL=0x%X\n",
+		s_inputCount, PMF_JUMP_HELD, PMF_STUCK_TO_WALL ) );
+
+	int prevGround = s_inputBuf[0].groundEnt;
+	int prevFlags  = s_inputBuf[0].pm_flags;
+
+	for ( int i = 0; i < s_inputCount; i++ ) {
+		inputFrame_t *f = &s_inputBuf[i];
+		int dt = f->time - s_inputStartTime;
+
+		char tags[64] = "";
+		if ( (f->pm_flags & PMF_STUCK_TO_WALL) && !(prevFlags & PMF_STUCK_TO_WALL) )
+			Q_strcat( tags, sizeof(tags), " <WALLGRAB>" );
+		if ( f->groundEnt == ENTITYNUM_NONE && prevGround != ENTITYNUM_NONE )
+			Q_strcat( tags, sizeof(tags), " <JUMPED>" );
+		if ( f->groundEnt != ENTITYNUM_NONE && prevGround == ENTITYNUM_NONE )
+			Q_strcat( tags, sizeof(tags), " <LANDED>" );
+		prevGround = f->groundEnt;
+		prevFlags  = f->pm_flags;
+
+		trap->Print( va(
+			"%+6dms  fwd=%+4d rt=%+4d up=%+4d  wpncmd=%d wpnps=%d"
+			"  grnd=%-3s  pmf=0x%04X  anim=%-4d  flev=%d"
+			"  vel={%6.0f %6.0f %6.0f}%s\n",
+			dt,
+			f->fwd, f->rt, f->up,
+			f->weapon_cmd, f->weapon_ps,
+			(f->groundEnt == ENTITYNUM_NONE) ? "NO" : "YES",
+			(unsigned)f->pm_flags,
+			f->legsAnim,
+			f->forceLev,
+			f->vel[0], f->vel[1], f->vel[2],
+			tags ) );
+	}
+
+	trap->SendServerCommand( ent->s.number,
+		va( "print \"RecordInput: %d frames printed to server console / qconsole.log\n\"", s_inputCount ) );
+}
+
+void Cmd_RecordInput_f( gentity_t *ent ) {
+	if ( !sv_cheats.integer ) {
+		trap->SendServerCommand( ent->s.number, "print \"recordinput: sv_cheats must be 1.\n\"" );
+		return;
+	}
+
+	char arg1[MAX_TOKEN_CHARS] = "";
+	if ( trap->Argc() > 1 )
+		trap->Argv( 1, arg1, sizeof(arg1) );
+
+	if ( Q_stricmp( arg1, "stop" ) == 0 ) {
+		s_inputRecording = qfalse;
+		s_inputClient    = -1;
+		G_WriteInputRecord( ent );
+		s_inputCount = 0;
+		return;
+	}
+
+	// Start (or restart) recording
+	s_inputCount     = 0;
+	s_inputClient    = ent->s.number;
+	s_inputStartTime = level.time;
+	s_inputRecording = qtrue;
+
+	trap->SendServerCommand( ent->s.number,
+		va( "print \"RecordInput: started for client %d. Type 'recordinput stop' when done.\n\"",
+		    ent->s.number ) );
+}
+
 	void Cmd_NavDraw_f( gentity_t *ent ) {
 	if (!sv_cheats.integer) {
 		trap->SendServerCommand(ent->s.number, "print \"NavDraw: sv_cheats must be 1.\n\"");
@@ -3464,8 +3612,46 @@ void Cmd_NavCheck_f( gentity_t *ent ) {
 		if (radius > 5000.0f) radius = 5000.0f; // cap for performance
 	}
 
-	trap->SendServerCommand(ent->s.number, va("print \"NavDraw: Rendering NavMesh within %.0f units...\n\"", radius));
+	trap->SendServerCommand(ent->s.number, va("print \"NavDraw: Rendering NavMesh within %.0f units (use navdrawoffmesh for connections)...\n\"", radius));
 	NavMesh_DrawDebug(ent->client->ps.origin, radius);
+	}
+
+	void Cmd_NavDrawOffMesh_f( gentity_t *ent ) {
+	if (!sv_cheats.integer) {
+		trap->SendServerCommand(ent->s.number, "print \"NavDrawOffMesh: sv_cheats must be 1.\n\"");
+		trap->SendServerCommand(ent->s.number, "print \"Usage: navdrawoffmesh [radius] [drop] [jump] [wallrun] [elevator] [jumppad]\n\"");
+		return;
+	}
+
+	float radius = 1000.0f;
+	int typeMask = 0; // 0 = draw all
+
+	int argc = trap->Argc();
+	for (int i = 1; i < argc; i++) {
+		char arg[MAX_TOKEN_CHARS];
+		trap->Argv(i, arg, sizeof(arg));
+
+		// First numeric arg is radius
+		if (arg[0] >= '0' && arg[0] <= '9') {
+			radius = atof(arg);
+			if (radius <= 0) radius = 1000.0f;
+			if (radius > 5000.0f) radius = 5000.0f;
+		} else if (Q_stricmp(arg, "drop") == 0) {
+			typeMask |= (1 << OFFMESH_AREA_JUMP_DROP);
+		} else if (Q_stricmp(arg, "jump") == 0) {
+			typeMask |= (1 << OFFMESH_AREA_JUMP_BASIC);
+		} else if (Q_stricmp(arg, "wallrun") == 0) {
+			typeMask |= (1 << OFFMESH_AREA_WALLRUN);
+		} else if (Q_stricmp(arg, "elevator") == 0) {
+			typeMask |= (1 << 10);
+		} else if (Q_stricmp(arg, "jumppad") == 0) {
+			typeMask |= (1 << 11);
+		}
+	}
+
+	const char* filter = (typeMask == 0) ? "all types" : va("mask 0x%X", typeMask);
+	trap->SendServerCommand(ent->s.number, va("print \"NavDrawOffMesh: %.0f units, %s | red=drop yellow=jump green=wallrun blue=elevator orange=jumppad\n\"", radius, filter));
+	NavMesh_DrawOffMeshDebug(ent->client->ps.origin, radius, typeMask);
 	}
 
 	/*
@@ -3515,6 +3701,8 @@ command_t commands[] = {
 	{ "navtest",			Cmd_NavTest_f,				CMD_CHEAT|CMD_ALIVE },
 	{ "navcheck",			Cmd_NavCheck_f,				CMD_CHEAT|CMD_ALIVE },
 	{ "navdraw",			Cmd_NavDraw_f,				CMD_CHEAT|CMD_ALIVE },
+	{ "navdrawoffmesh",		Cmd_NavDrawOffMesh_f,		CMD_CHEAT|CMD_ALIVE },
+	{ "recordinput",		Cmd_RecordInput_f,			CMD_CHEAT|CMD_ALIVE },
 	{ "noclip",				Cmd_Noclip_f,				CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "notarget",			Cmd_Notarget_f,				CMD_CHEAT|CMD_ALIVE|CMD_NOINTERMISSION },
 	{ "npc",				Cmd_NPC_f,					CMD_CHEAT|CMD_ALIVE },

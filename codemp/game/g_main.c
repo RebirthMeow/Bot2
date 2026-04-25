@@ -41,6 +41,8 @@ typedef BOOL (WINAPI *MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD dwPid, HANDLE hF
     CONST PMINIDUMP_CALLBACK_INFORMATION CallbackParam
 );
 
+static PVOID g_vehHandle = NULL; // Handle for RemoveVectoredExceptionHandler on shutdown
+
 static LONG WINAPI GameCrashHandler(EXCEPTION_POINTERS *pExceptionInfo) {
     HMODULE hDbgHelp;
     MINIDUMPWRITEDUMP pDump;
@@ -242,7 +244,9 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	char serverinfo[MAX_INFO_STRING] = {0};
 
 #ifdef _WIN32
-	AddVectoredExceptionHandler(1, GameCrashHandler);
+	if (!g_vehHandle) {
+		g_vehHandle = AddVectoredExceptionHandler(1, GameCrashHandler);
+	}
 #endif
 
 	Rand_Init( randomSeed );
@@ -518,6 +522,16 @@ G_ShutdownGame
 void G_ShutdownGame( int restart ) {
 	int i = 0;
 	gentity_t *ent;
+
+#ifdef _WIN32
+	// Must remove the VEH handler before the DLL is unloaded.
+	// If the handler stays registered after VM_Free, it becomes a dangling pointer.
+	// Any subsequent exception in the process will call into freed memory and crash.
+	if (g_vehHandle) {
+		RemoveVectoredExceptionHandler(g_vehHandle);
+		g_vehHandle = NULL;
+	}
+#endif
 
 	NavMesh_Free();
 

@@ -258,6 +258,113 @@ extern "C" int NavMesh_GetNextWaypoint(int passEntityNum, const float* startPoin
 	return (int)NavMesh_DoQuery(passEntityNum, startPoint, endPoint, outWaypoint);
 }
 
+// Extended query: same immediate-next-waypoint logic as NavMesh_GetNextWaypoint, but also
+// scans the full straight path for the first off-mesh connection and surfaces its type and
+// endpoints so the bot can suppress ledge avoidance and activate traversal states.
+extern "C" int NavMesh_GetNextWaypointEx(int passEntityNum, const float* startQuake, const float* endQuake, NavMeshWaypoint_t* outInfo, int avoidAreaMask) {
+	if (!g_navMesh || !g_navQuery || !outInfo) return 0;
+	if (!IsValidVector(startQuake) || !IsValidVector(endQuake)) return 0;
+
+	// Zero the output so callers get clean defaults on early return.
+	outInfo->position[0] = outInfo->position[1] = outInfo->position[2] = 0.0f;
+	outInfo->offmeshType = 0;
+	outInfo->offmeshStart[0] = outInfo->offmeshStart[1] = outInfo->offmeshStart[2] = 0.0f;
+	outInfo->offmeshEnd[0]   = outInfo->offmeshEnd[1]   = outInfo->offmeshEnd[2]   = 0.0f;
+
+	static const int MAX_PATH_NODES = 512;
+	static dtPolyRef     pathRefs[MAX_PATH_NODES];
+	static float         straightPath[MAX_PATH_NODES * 3];
+	static unsigned char straightPathFlags[MAX_PATH_NODES];
+	static dtPolyRef     straightPathRefs[MAX_PATH_NODES];
+
+	dtQueryFilter filter;
+	filter.setIncludeFlags(0xffff);
+	filter.setExcludeFlags(0);
+	// Make penalised areas extremely expensive so the pathfinder routes around them
+	// whenever an alternative exists — it still uses them if there is no other route.
+	if (avoidAreaMask) {
+		for (int a = 0; a < 64; ++a) {
+			if (avoidAreaMask & (1 << a))
+				filter.setAreaCost(a, 999999.0f);
+		}
+	}
+
+	float startRecast[3], endRecast[3], extent[3] = { 2.0f, 4.0f, 2.0f };
+	QuakeToRecast(startQuake, startRecast);
+	QuakeToRecast(endQuake,   endRecast);
+
+	dtPolyRef startRef = 0, endRef = 0;
+	float nearestStart[3], nearestEnd[3];
+	g_navQuery->findNearestPoly(startRecast, extent, &filter, &startRef, nearestStart);
+	g_navQuery->findNearestPoly(endRecast,   extent, &filter, &endRef,   nearestEnd);
+	if (!startRef || !endRef) return 0;
+
+	int pathCount = 0;
+	dtStatus status = g_navQuery->findPath(startRef, endRef, nearestStart, nearestEnd, &filter, pathRefs, &pathCount, MAX_PATH_NODES);
+	if (dtStatusFailed(status) || pathCount <= 0) return 0;
+
+	int straightPathCount = 0;
+	status = g_navQuery->findStraightPath(nearestStart, nearestEnd, pathRefs, pathCount,
+	                                       straightPath, straightPathFlags, straightPathRefs,
+	                                       &straightPathCount, MAX_PATH_NODES);
+	if (dtStatusFailed(status) || straightPathCount < 2) return 0;
+
+	// --- Pass 1: scan for first off-mesh connection anywhere in the path ---
+	// Do this before the LOS-chaining loop so we always have area/start/end populated
+	// when we return, regardless of how far away the connection is.
+	for (int i = 1; i < straightPathCount; i++) {
+		if (straightPathFlags[i] & DT_STRAIGHTPATH_OFFMESH_CONNECTION) {
+			unsigned char area = 0;
+			if (straightPathRefs[i] != 0)
+				g_navMesh->getPolyArea(straightPathRefs[i], &area);
+
+			RecastToQuake(&straightPath[i * 3], outInfo->offmeshStart);
+			if (i + 1 < straightPathCount)
+				RecastToQuake(&straightPath[(i + 1) * 3], outInfo->offmeshEnd);
+			else
+				outInfo->offmeshEnd[0] = outInfo->offmeshStart[0],
+				outInfo->offmeshEnd[1] = outInfo->offmeshStart[1],
+				outInfo->offmeshEnd[2] = outInfo->offmeshStart[2];
+
+			outInfo->offmeshType = (int)area;
+			break;
+		}
+	}
+
+	// --- Pass 2: LOS-chaining to find the best immediate next waypoint ---
+	// Off-mesh connection start points are never skipped by LOS chaining —
+	// we always return them directly so the bot explicitly navigates to the
+	// activation point rather than overshooting into a gap or wall.
+	vec3_t mins = {-13, -13, -20}, maxs = {13, 13, 30};
+
+	for (int i = 1; i < straightPathCount; ++i) {
+		// Never LOS-chain past an off-mesh start — return it immediately.
+		if (straightPathFlags[i] & DT_STRAIGHTPATH_OFFMESH_CONNECTION) {
+			RecastToQuake(&straightPath[i * 3], outInfo->position);
+			return 1;
+		}
+
+		float wpQuake[3];
+		RecastToQuake(&straightPath[i * 3], wpQuake);
+
+		trace_t tr;
+		vec3_t traceStart = { startQuake[0], startQuake[1], startQuake[2] + 2.0f };
+		trap->Trace(&tr, traceStart, mins, maxs, wpQuake, passEntityNum, MASK_PLAYERSOLID, 0, 0, 0);
+		if (tr.fraction < 1.0f) {
+			if (i == 1) { VectorCopy(wpQuake, outInfo->position); return 1; }
+			else        { RecastToQuake(&straightPath[(i-1) * 3], outInfo->position); return 1; }
+		}
+
+		float dx = wpQuake[0] - startQuake[0], dy = wpQuake[1] - startQuake[1];
+		if (sqrtf(dx * dx + dy * dy) > 48.0f || i == straightPathCount - 1) {
+			VectorCopy(wpQuake, outInfo->position);
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 extern "C" int NavMesh_GetPath(int passEntityNum, const float* startQuake, const float* endQuake, float* outWaypoints, int maxWaypoints) {
 	if (!g_navMesh || !g_navQuery || !IsValidVector(startQuake) || !IsValidVector(endQuake) || maxWaypoints <= 0) return 0;
 
@@ -358,7 +465,7 @@ extern "C" void NavMesh_DrawDebug(const float* center, float radius) {
 	QuakeToRecast(center, recastCenter);
 	float radiusSq = (radius * QUAKE_TO_METERS) * (radius * QUAKE_TO_METERS);
 	
-	int maxLines = 1000;
+	int maxLines = 150;
 	int linesDrawn = 0;
 
 	for (int i = 0; i < g_navMesh->getMaxTiles(); ++i) {
@@ -396,6 +503,90 @@ extern "C" void NavMesh_DrawDebug(const float* center, float radius) {
 				G_TestLine(q0, q1, 0x00ffff, 5000); // Cyan color, 5 seconds
 				linesDrawn++;
 				if (linesDrawn >= maxLines) return;
+			}
+		}
+	}
+}
+
+extern "C" void NavMesh_DrawOffMeshDebug(const float* center, float radius, int typeMask) {
+	if (!g_navMesh || !IsValidVector(center)) return;
+
+	float radiusSq = radius * radius;
+	int linesDrawn = 0;
+	const int maxLines = 150;
+
+	// First pass: tally area types so we can print a useful summary
+	int areaCounts[64] = {0};
+	int totalInRadius = 0;
+	for (int i = 0; i < g_navMesh->getMaxTiles(); ++i) {
+		const dtMeshTile* tile = static_cast<const dtNavMesh*>(g_navMesh)->getTile(i);
+		if (!tile || !tile->header) continue;
+		for (int j = 0; j < tile->header->offMeshConCount; ++j) {
+			const dtOffMeshConnection* con = &tile->offMeshCons[j];
+			float qStart[3];
+			RecastToQuake(&con->pos[0], qStart);
+			float dx = qStart[0] - center[0];
+			float dy = qStart[1] - center[1];
+			if (dx*dx + dy*dy > radiusSq) continue;
+			totalInRadius++;
+			unsigned char area = tile->polys[con->poly].getArea();
+			if (area < 64) areaCounts[area]++;
+		}
+	}
+	NavMesh_Log("OffMesh in radius: %d total\n", totalInRadius);
+	for (int a = 0; a < 64; ++a) {
+		if (areaCounts[a] > 0)
+			NavMesh_Log("  area %d: %d connection(s)\n", a, areaCounts[a]);
+	}
+
+	for (int i = 0; i < g_navMesh->getMaxTiles() && linesDrawn < maxLines; ++i) {
+		const dtMeshTile* tile = static_cast<const dtNavMesh*>(g_navMesh)->getTile(i);
+		if (!tile || !tile->header) continue;
+
+		for (int j = 0; j < tile->header->offMeshConCount && linesDrawn < maxLines; ++j) {
+			const dtOffMeshConnection* con = &tile->offMeshCons[j];
+
+			// Convert Recast-space positions to Quake space
+			float qStart[3], qEnd[3];
+			RecastToQuake(&con->pos[0], qStart);
+			RecastToQuake(&con->pos[3], qEnd);
+
+			// XY distance check (ignore Z) — skip if outside radius
+			float dx = qStart[0] - center[0];
+			float dy = qStart[1] - center[1];
+			if (dx*dx + dy*dy > radiusSq) continue;
+
+			// Area type lives in the connection's associated poly
+			unsigned char area = tile->polys[con->poly].getArea();
+
+			// Filter by type mask if one was specified (0 = draw all)
+			if (typeMask != 0 && !(typeMask & (1 << area))) continue;
+
+			// s.weapon is 8-bit on the wire. CGDEBUG_SaberColor maps indices:
+			//   0=white(special), 1=orange, 2=yellow, 3=green, 4=blue, 5=purple
+			// Values 6-255 fall through and set R=value, G=0, B=0 (shades of red).
+			// Use 255 to get a bright, pure red.
+			int color;
+			switch (area) {
+				case OFFMESH_AREA_JUMP_DROP:  color = 255; break; // red    — drop
+				case OFFMESH_AREA_JUMP_BASIC: color = 2;   break; // yellow — basic jump  (SABER_YELLOW)
+				case OFFMESH_AREA_WALLRUN:    color = 3;   break; // green  — wallrun     (SABER_GREEN)
+				case 10:                      color = 4;   break; // blue   — elevator    (SABER_BLUE)
+				case 11:                      color = 1;   break; // orange — jumppad     (SABER_ORANGE)
+				default:                      color = 0;   break; // white  — unknown
+			}
+
+			// Main line start -> end, lifted 4 units off the floor
+			float s[3] = { qStart[0], qStart[1], qStart[2] + 4.0f };
+			float e[3] = { qEnd[0],   qEnd[1],   qEnd[2]   + 4.0f };
+			G_TestLine(s, e, color, 5000);
+			linesDrawn++;
+
+			// Vertical spike at start so connections are easy to spot
+			if (linesDrawn < maxLines) {
+				float spike[3] = { qStart[0], qStart[1], qStart[2] + 44.0f };
+				G_TestLine(s, spike, color, 5000);
+				linesDrawn++;
 			}
 		}
 	}

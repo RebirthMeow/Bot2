@@ -20,13 +20,39 @@ typedef struct bot2_state_s {
 	int chargeTimer;        // Throttle weapon charging (e.g., Bryar)
 
 	// --- MICRO STATE MACHINE ---
-	// state: 0 = Walk/Run, 2 = Airborne/Falling, 3 = Trigger Push / Jump Pad
+	// state values — use BOT_STATE_* constants below
 	int state, stateTimer, strafeDir, spawnCooldown, ledgeEvading;
 	float targetYaw;
 
+	// --- OFF-MESH CONNECTION TRAVERSAL (States 5-7) ---
+	// offmeshType mirrors the OFFMESH_AREA_* value that triggered the state.
+	// The landing target is stored in tele_predPos (shared with jump-pad state).
+	int offmeshType;
+
+	// --- ELEVATOR STATE (State 4) ---
+	int elevatorEntNum;   // entity number of the func_plat being used
+	int elevatorPhase;    // 0 = waiting to board, 1 = riding to destination
+
+	// --- WALLRUN STATE (State 7) ---
+	// Phase 0: approach wall — face wallrunFaceYaw, forwardmove until flush
+	// Phase 1: press jump to leave ground
+	// Phase 2: release jump, wait for PMF_JUMP_HELD to clear
+	// Phase 3: press jump again — this fires the wallrun animation (BOTH_FORCEWALLRUNFLIP_START)
+	// Phase 4: running up the wall; if wallrunTopJump, press jump at ~700 ms
+	// Phase 5: post-top-jump — falling toward far-side destination, wait to land
+	int wallrunPhase;
+	float    wallrunFaceYaw;     // yaw toward the wall face (XY of offmeshEnd - offmeshStart)
+	qboolean wallrunTopJump;     // true = press jump at top to reach far-side destination
+	int      wallrunPhase3Time;  // level.time when phase 3 fired (for top-jump timing)
+	int      wallrunPhase5Time;  // level.time when phase 5 fired (post-flip)
+	int      wallrunRetries;     // number of failed wallrun attempts at this connection
+	int      wallrunCooldown;    // level.time of last abort; staging is blocked for 3 s
+	int      offmeshExitTime;    // level.time of last offmesh state exit; blocks re-activation for 1.5 s
+
 	// --- ANTI-SNAG ENGINE ---
 	vec3_t stuck_pos;
-	int stuck_timer, unstuck_phase, unstuck_phase_timer;
+	int   stuck_timer, unstuck_phase, unstuck_phase_timer;
+	float stuck_dist_acc;  // XY ground-speed accumulated since last 1-s check (u/s units, not u)
 
 	// --- ROUTING TEST HARNESS ---
 	qboolean test_active;
@@ -50,14 +76,27 @@ typedef struct bot2_state_s {
 
 	int diagTimer, jumpRetryTimer; char lastFailReason[128];
 
+	// --- WALLRUN WEAPON SAVE ---
+	int savedWeapon;  // weapon held before entering BOT_STATE_WALLRUN; 0 = none saved
+
 	// --- AIMING & HUMANIZATION ---
 	vec3_t lastViewAngles;
-	int lastAimTime, combatIntentTime;
+	int lastAimTime, combatIntentTime, combatAimHoldTime;
 	char tele_lastAimString[256];
 	int tele_lastFireTime;
 	int tele_lastHits;
 	} bot2_state_t;
 extern bot2_state_t bot2_states[MAX_CLIENTS];
+
+// bot2_state_t.state values
+#define BOT_STATE_WALK        0   // ground locomotion and running-jump logic
+#define BOT_STATE_ESCAPE      1   // dedicated stuck-recovery jump execution
+#define BOT_STATE_AIRBORNE    2   // generic airborne / free-strafe
+#define BOT_STATE_JUMPPAD     3   // trigger_push / jump pad
+#define BOT_STATE_ELEVATOR    4   // func_plat / func_door elevator
+#define BOT_STATE_DROP        5   // off-mesh: walk off ledge, no jump needed
+#define BOT_STATE_JUMP        6   // off-mesh: running jump across gap
+#define BOT_STATE_WALLRUN     7   // off-mesh: wallrun up near-vertical surface
 
 void Bot2_ClearState(int clientNum);
 void Bot2_Think(int clientNum, int time);
@@ -66,7 +105,7 @@ void Bot2_UpdateManagedBots(void);
 // Navigation & Physics Helpers
 qboolean SimulatePmoveTrajectory(gentity_t* ent, playerState_t* in_ps, float start_yaw, int strafeDir, float angle_fraction, float max_run_speed, vec3_t out_pmove_land_pos, playerState_t* out_ps, qboolean lockAim, vec3_t aimDir);
 qboolean IsSafeToJump(gentity_t* ent, int clientNum, vec3_t start, float current_speed, float vel_yaw, int testDir, float max_run_speed, char* failReason, char* warningString, vec3_t out_land_pos, float* out_land_speed, vec3_t targetOrigin, float* out_chain_dist, int* out_chain_frac, qboolean lockAim, vec3_t aimDir);
-qboolean Bot2_GetLeadOrigin(gentity_t* ent, gentity_t* target, vec3_t out_leadPos, qboolean doTelemetry);
+qboolean Bot2_GetLeadOrigin(gentity_t* ent, gentity_t* target, vec3_t out_leadPos, qboolean doTelemetry, float* out_timeOfFlight);
 void Bot2_ExecuteMovement(int clientNum, usercmd_t *ucmd, vec3_t targetOrigin, vec3_t aimDir, qboolean lockAim, qboolean wantsSpeed, qboolean hasFallback, vec3_t fallbackOrigin);
 void Bot2_PrintTelemetry(int mode, const char* format, ...);
 

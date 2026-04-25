@@ -1354,6 +1354,9 @@ void ClientThink			( int clientNum, usercmd_t *ucmd );
 void ClientEndFrame			( gentity_t *ent );
 void G_RunClient			( gentity_t *ent );
 
+// Input recorder — call once per ClientThink tick before pmove runs
+void G_RecordInputFrame( gentity_t *ent, usercmd_t *ucmd );
+
 //
 // g_team.c
 //
