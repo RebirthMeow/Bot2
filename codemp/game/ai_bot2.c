@@ -164,6 +164,7 @@ static int Bot2_PopulateItemSearch(gentity_t* ent, const char** outList, int max
 // ==============================================================================
 void Bot2_Think(int clientNum, int time) {
 	gentity_t* ent = &g_entities[clientNum]; usercmd_t ucmd; char serverCmd[1024];
+	memset(&ucmd, 0, sizeof(ucmd));
 
 	if (!ent || !ent->inuse || !ent->client || !botstates[clientNum]) return;
 	if (level.intermissiontime || level.time == 0) return;

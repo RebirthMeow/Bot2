@@ -571,8 +571,8 @@ extern "C" void NavMesh_DrawOffMeshDebug(const float* center, float radius, int 
 				case OFFMESH_AREA_JUMP_DROP:  color = 255; break; // red    — drop
 				case OFFMESH_AREA_JUMP_BASIC: color = 2;   break; // yellow — basic jump  (SABER_YELLOW)
 				case OFFMESH_AREA_WALLRUN:    color = 3;   break; // green  — wallrun     (SABER_GREEN)
-				case 10:                      color = 4;   break; // blue   — elevator    (SABER_BLUE)
-				case 11:                      color = 1;   break; // orange — jumppad     (SABER_ORANGE)
+				case OFFMESH_AREA_ELEVATOR:   color = 4;   break; // blue   — elevator    (SABER_BLUE)
+				case OFFMESH_AREA_JUMPPAD:    color = 1;   break; // orange — jumppad     (SABER_ORANGE)
 				default:                      color = 0;   break; // white  — unknown
 			}
 
@@ -615,4 +615,37 @@ extern "C" void NavMesh_PrintDebugInfo(void) {
 
 	NavMesh_Log("Quake Nav Bounds -> MIN: %.2f %.2f %.2f | MAX: %.2f %.2f %.2f\n",
 		quakeMin[0], quakeMin[1], quakeMin[2], quakeMax[0], quakeMax[1], quakeMax[2]);
+}
+
+// Fills outMin/outMax with the navmesh's walkable extent in Quake space.
+// Returns 1 on success, 0 if no navmesh is loaded.
+extern "C" int NavMesh_GetBounds(float* outMin, float* outMax) {
+	if (!g_navMesh || !outMin || !outMax) return 0;
+
+	float bmin[3] = {  1e9f,  1e9f,  1e9f };
+	float bmax[3] = { -1e9f, -1e9f, -1e9f };
+	int validTiles = 0;
+
+	for (int i = 0; i < g_navMesh->getMaxTiles(); ++i) {
+		const dtMeshTile* tile = static_cast<const dtNavMesh*>(g_navMesh)->getTile(i);
+		if (!tile || !tile->header) continue;
+		validTiles++;
+		for (int j = 0; j < 3; ++j) {
+			if (tile->header->bmin[j] < bmin[j]) bmin[j] = tile->header->bmin[j];
+			if (tile->header->bmax[j] > bmax[j]) bmax[j] = tile->header->bmax[j];
+		}
+	}
+
+	if (!validTiles) return 0;
+
+	float qmin[3], qmax[3];
+	RecastToQuake(bmin, qmin);
+	RecastToQuake(bmax, qmax);
+
+	// RecastToQuake swaps Y/Z so min/max may be inverted on Z — normalise.
+	for (int j = 0; j < 3; ++j) {
+		outMin[j] = qmin[j] < qmax[j] ? qmin[j] : qmax[j];
+		outMax[j] = qmin[j] < qmax[j] ? qmax[j] : qmin[j];
+	}
+	return 1;
 }

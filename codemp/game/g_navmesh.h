@@ -13,6 +13,9 @@ typedef float navVec3_t[3];
 #define OFFMESH_AREA_JUMP_DROP    2   // walk/fall off ledge, no jump needed
 #define OFFMESH_AREA_JUMP_BASIC   3   // running jump across a gap
 #define OFFMESH_AREA_WALLRUN      4   // wallrun up near-vertical surface
+#define OFFMESH_AREA_ELEVATOR     10  // func_plat / vertical func_door
+#define OFFMESH_AREA_JUMPPAD      11  // trigger_push: connection start at the trigger
+                                      // footprint, end at the upper-ledge landing wp
 
 // Extended waypoint result returned by NavMesh_GetNextWaypointEx.
 // `position` is the immediate next nav waypoint (same as NavMesh_GetNextWaypoint).
@@ -42,6 +45,7 @@ void  NavMesh_DrawDebug(const float* center, float radius);
 // typeMask: bitmask of area types to draw. Bit N = draw area N. 0 = draw all.
 void  NavMesh_DrawOffMeshDebug(const float* center, float radius, int typeMask);
 void  NavMesh_PrintDebugInfo(void);
+int   NavMesh_GetBounds(float* outMin, float* outMax);
 void  NavMesh_Log(const char* fmt, ...);
 
 #ifdef __cplusplus

@@ -33,13 +33,32 @@ typedef struct bot2_state_s {
 	int elevatorEntNum;   // entity number of the func_plat being used
 	int elevatorPhase;    // 0 = waiting to board, 1 = riding to destination
 
+	// --- JUMPPAD APPROACH CACHE (State 3 prep) ---
+	// Captured every tick during BOT_STATE_WALK whenever the path query reports
+	// an OFFMESH_AREA_JUMPPAD connection ahead.  The trigger_push's own
+	// target_position is often straight overhead (vertical-launch pads), which
+	// is useless for in-air steering — the actual upper-ledge landing waypoint
+	// is the offmesh connection's END, and that's what the bot must lean toward
+	// while airborne.  Locked into tele_predPos at the moment the bot enters
+	// the trigger so Detour cannot re-route mid-flight.
+	// jumppadCachedTime gates freshness: if the most recent capture is older
+	// than JUMPPAD_CACHE_FRESH_MS, the cache is treated as stale (path changed
+	// targets, bot wandered off, etc.) and the fallbacks take over.
+	vec3_t   jumppadCachedEnd;
+	int      jumppadCachedTime;
+	qboolean jumppadEndCached;
+
 	// --- WALLRUN STATE (State 7) ---
 	// Phase 0: approach wall — face wallrunFaceYaw, forwardmove until flush
 	// Phase 1: press jump to leave ground
 	// Phase 2: release jump, wait for PMF_JUMP_HELD to clear
 	// Phase 3: press jump again — this fires the wallrun animation (BOTH_FORCEWALLRUNFLIP_START)
-	// Phase 4: running up the wall; if wallrunTopJump, press jump at ~700 ms
-	// Phase 5: post-top-jump — falling toward far-side destination, wait to land
+	// Phase 4: ascending — upmove=0; if wallrunTopJump, transitions to phase 5 at apex
+	// Phase 5: kickflip (jump-off only) — hold S (or W facing dest if lockAim) + jump; wait for anim to clear
+	// Phase 6: falling to destination — steer toward tele_predPos, wait to land
+	//
+	// wallrunTopJump = destination is BEHIND the wall face (dot(end-start, wallFwd) < 0) → jump-off
+	// wallrunTopJump = false                                                               → mount (ride up)
 	int wallrunPhase;
 	float    wallrunFaceYaw;     // yaw toward the wall face (XY of offmeshEnd - offmeshStart)
 	qboolean wallrunTopJump;     // true = press jump at top to reach far-side destination
@@ -107,6 +126,9 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, playerState_t* in_ps, float sta
 qboolean IsSafeToJump(gentity_t* ent, int clientNum, vec3_t start, float current_speed, float vel_yaw, int testDir, float max_run_speed, char* failReason, char* warningString, vec3_t out_land_pos, float* out_land_speed, vec3_t targetOrigin, float* out_chain_dist, int* out_chain_frac, qboolean lockAim, vec3_t aimDir);
 qboolean Bot2_GetLeadOrigin(gentity_t* ent, gentity_t* target, vec3_t out_leadPos, qboolean doTelemetry, float* out_timeOfFlight);
 void Bot2_ExecuteMovement(int clientNum, usercmd_t *ucmd, vec3_t targetOrigin, vec3_t aimDir, qboolean lockAim, qboolean wantsSpeed, qboolean hasFallback, vec3_t fallbackOrigin);
+void Bot2_WallrunCheck(gentity_t *ent);
+void Bot2_ScanWallruns(int gridStep, float radius, int centerClient);
+void Bot2_ScanWallrunsHeadless(int gridStep, float radius, int centerClient);
 void Bot2_PrintTelemetry(int mode, const char* format, ...);
 
 #endif

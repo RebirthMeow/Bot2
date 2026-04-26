@@ -476,6 +476,51 @@ typedef struct svcmd_s {
 
 #include "ai_bot2.h"
 
+void Svcmd_BotWallrunCheck_f( void ) {
+	char arg[MAX_TOKEN_CHARS];
+	int clientNum = 0;
+	if (trap->Argc() >= 2) {
+		trap->Argv(1, arg, sizeof(arg));
+		clientNum = atoi(arg);
+	}
+	if (clientNum < 0 || clientNum >= MAX_CLIENTS) {
+		trap->Print("Usage: bot_wallrun_check <clientnum>\n");
+		return;
+	}
+	gentity_t *ent = &g_entities[clientNum];
+	trap->Print("[WR-CHECK] Checking wallrun surface for client %d (%s)...\n",
+		clientNum, (ent->client ? ent->client->pers.netname : "?"));
+	Bot2_WallrunCheck(ent);
+}
+
+void Svcmd_BotScanWallruns_f( void ) {
+	char arg[MAX_TOKEN_CHARS];
+
+	int   gridStep    = 96;
+	float radius      = 0.0f;
+	int   clientNum   = 0;
+
+	if (trap->Argc() >= 2) { trap->Argv(1, arg, sizeof(arg)); gridStep  = atoi(arg); }
+	if (trap->Argc() >= 3) { trap->Argv(2, arg, sizeof(arg)); radius    = (float)atof(arg); }
+	if (trap->Argc() >= 4) { trap->Argv(3, arg, sizeof(arg)); clientNum = atoi(arg); }
+
+	Bot2_ScanWallruns(gridStep, radius, clientNum);
+}
+
+void Svcmd_BotScanWallrunsHeadless_f( void ) {
+	char arg[MAX_TOKEN_CHARS];
+
+	int   gridStep    = 96;
+	float radius      = 0.0f;
+	int   clientNum   = 0;
+
+	if (trap->Argc() >= 2) { trap->Argv(1, arg, sizeof(arg)); gridStep  = atoi(arg); }
+	if (trap->Argc() >= 3) { trap->Argv(2, arg, sizeof(arg)); radius    = (float)atof(arg); }
+	if (trap->Argc() >= 4) { trap->Argv(3, arg, sizeof(arg)); clientNum = atoi(arg); }
+
+	Bot2_ScanWallrunsHeadless(gridStep, radius, clientNum);
+}
+
 void Svcmd_BotTestRouting_f( void ) {
 	char arg[MAX_TOKEN_CHARS];
 	int clientNum = 0;
@@ -501,6 +546,9 @@ svcmd_t svcmds[] = {
 	{ "addbot",						Svcmd_AddBot_f,						qfalse },
 	{ "addip",						Svcmd_AddIP_f,						qfalse },
 	{ "bot_test_routing",			Svcmd_BotTestRouting_f,				qfalse },
+	{ "bot_wallrun_check",			Svcmd_BotWallrunCheck_f,			qfalse },
+	{ "bot_scan_wallruns",			Svcmd_BotScanWallruns_f,			qfalse },
+	{ "bot_scan_wallruns_headless",	Svcmd_BotScanWallrunsHeadless_f,	qfalse },
 	{ "botlist",					Svcmd_BotList_f,					qfalse },
 	{ "entitylist",					Svcmd_EntityList_f,					qfalse },
 	{ "forceteam",					Svcmd_ForceTeam_f,					qfalse },
