@@ -17,6 +17,41 @@
 #include "ai_bot2.h"
 #include "ai_bot2_internal.h"
 
+// Computes where to aim such that a fired projectile will arrive at the
+// target's predicted future position rather than where the target is now.
+//
+// Algorithm:
+//   1.  Look up the projectile speed and behaviour flags (splash radius,
+//       ballistic arc, sync-with-target requirement) for ent's current
+//       weapon.  Hitscan weapons (saber, disruptor primary, repeater
+//       primary) skip prediction entirely — out_leadPos = target head.
+//   2.  Iterate twice (fixed-point style): start with the target's current
+//       position, compute time-of-flight from shooter eye to that point,
+//       advance the target by velocity*ToF, repeat once.  Two passes are
+//       enough to converge for the speeds and distances in JKA; more would
+//       just amplify floating-point noise.
+//   3.  If the target is airborne, trace down to the floor to clamp how
+//       far the prediction can fall under gravity (so we don't aim
+//       through geometry).
+//   4.  If needsSync (rocket, alt-flechette, alt-thermal etc.), reconcile
+//       projectile ToF with the target's expected fall-to-ground time so
+//       splash damage hits where the target will actually be standing.
+//   5.  Ballistic weapons (alt-flechette, repeater alt, thermals) get an
+//       extra Z compensation for their gravity drop over ToF.
+//
+// On success (return value):
+//   qtrue  — the lead is "synced": ToF matches the target's fall window,
+//            so a fired shot is expected to connect cleanly.
+//   qfalse — unsynced: either the target is mid-air with too long a fall
+//            time, or splash positioning was used as a hedge.  Caller
+//            (Bot2_Think) uses this to gate firing on non-Bryar weapons —
+//            an unsynced shot is held until the target settles.
+//
+// Side effects:
+//   out_leadPos       — predicted aim point (always written).
+//   out_timeOfFlight  — projectile ToF in seconds (NULL OK to skip).
+//   tele_lastAimString — populated when doTelemetry is true; consumed by
+//                        the HIT/MISS telemetry block at end of Bot2_Think.
 qboolean Bot2_GetLeadOrigin(gentity_t* ent, gentity_t* target, vec3_t out_leadPos, qboolean doTelemetry, float* out_timeOfFlight) {
 	if (!target || !target->client) { VectorCopy(target->s.origin, out_leadPos); return qtrue; }
 	vec3_t myEye, tOrigin;

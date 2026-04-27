@@ -1,6 +1,6 @@
 # Bot2
 
-This is a vibe coded project. Bot2 is a strafe jumping bot that works on any\* map. Navmesh is generated from BSP (details coming soon), and recast+detour library is added to the game, which is used for realtime pathfinding during gameplay. In addition, the bot2 performs strafe jumping inputs which are validated by pmove predictions. Also has stuff for jumppads, wallruns, elevators, basic CTF class roles logic, some shooting, etc. -Xen
+This is a vibe coded project. Bot2 is a bot that works on any\* map and can kinda strafe jump. Navmesh is generated from BSP (details coming soon), and recast+detour library is added to the game, which is used for realtime pathfinding during gameplay. In addition, the bot2 performs strafe jumping inputs which are validated by pmove predictions. Also has stuff for jumppads, wallruns, elevators, basic CTF class roles logic, some shooting, etc. -Xen
 
 ---
 

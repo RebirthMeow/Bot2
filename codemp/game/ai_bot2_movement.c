@@ -65,7 +65,21 @@ qboolean CheckForTriggerHurt(gentity_t* ent, vec3_t start, vec3_t end, vec3_t mi
 	return qfalse;
 }
 
-// Returns a "score" for floor safety based on tracing ahead and down
+// Probes the floor along a forward direction and returns a "safety score":
+//
+//   -1.0  — DANGER.  Either the floor drops away (>400u fall), is missing
+//           entirely (open void), or contains a trigger_hurt volume.  The
+//           caller treats this as "do NOT walk this way".
+//   0.0–1.0 — fraction of the requested distance that's clear before the
+//             forward bbox trace hits a wall (1.0 = nothing in front).
+//             Higher is safer — used to compare candidate strafe yaws etc.
+//
+// The function does ONE forward bbox trace (dist along yaw) and THREE
+// downward probes (at 33%, 66%, 100% of the cleared distance).  Any of the
+// downward probes hitting a deep pit / trigger_hurt forces the -1.0 return.
+//
+// hitWall (optional out): set to qtrue iff the forward trace hit a near-
+// vertical surface (normal.z < 0.7).  Used by the wallrun staging logic.
 float TraceFloorScore(gentity_t* ent, vec3_t start, float yaw, float dist, qboolean* hitWall) {
 	vec3_t forward, end, downEnd, tStart; trace_t tr, trDrop;
 	vec3_t mins = { -15, -15, -24 }, maxs = { 15, 15, 32 };
@@ -87,7 +101,15 @@ float TraceFloorScore(gentity_t* ent, vec3_t start, float yaw, float dist, qbool
 	return tr.fraction;
 }
 
-// Finds an alternate path if the direct path leads off a cliff
+// Called when the bot's intended direction (danger_yaw) leads off a ledge
+// or into a hazard.  Sweeps eight test yaws, starting from the direct
+// reverse (180° opposite) and fanning outward in alternating ±45° steps,
+// scoring each one with TraceFloorScore.  Returns the highest-scoring yaw
+// that's >= 0 (safe).  Early-exits on a perfect 1.0 score.
+//
+// Returns qtrue + writes safe_yaw if any tested direction is safe; qfalse
+// (with safe_yaw untouched) if every direction also leads to danger — in
+// which case the WALK state stops moving rather than picking a bad option.
 qboolean GetSafeEscapeYaw(gentity_t* ent, float danger_yaw, float* safe_yaw) {
 	float escape_yaw = AngleMod(danger_yaw + 180.0f); float best_score = -1.0f, best_yaw = escape_yaw;
 	for (int i = 0; i < 8; i++) {
@@ -99,7 +121,18 @@ qboolean GetSafeEscapeYaw(gentity_t* ent, float danger_yaw, float* safe_yaw) {
 	return qfalse;
 }
 
-// Decide whether to strafe left (-1) or right (+1) based on floor geometry
+// Picks an initial strafe-jump direction by comparing floor safety to the
+// left vs right of the intended travel yaw.  Probes 30° to either side
+// over a 256u distance and returns the side with the higher score:
+//
+//   +1 — strafe right (W+D for soft-strafe, just D for hard-strafe)
+//   -1 — strafe left  (W+A or just A)
+//
+// On a tie (both sides equally safe or both equally dangerous), picks
+// randomly so consecutive jumps don't lock into the same pattern.
+//
+// Used at the moment a jump fires (WALK state) to seed bot2_states[].strafeDir,
+// which is then preserved through the AIRBORNE state for the entire jump.
 int EvaluateStrafeDir(gentity_t* ent, float base_target_yaw) {
 	float scoreR = TraceFloorScore(ent, ent->client->ps.origin, AngleMod(base_target_yaw - 30.0f), 256.0f, NULL);
 	float scoreL = TraceFloorScore(ent, ent->client->ps.origin, AngleMod(base_target_yaw + 30.0f), 256.0f, NULL);
@@ -305,6 +338,52 @@ static qboolean Bot2_FindEscapeJump(gentity_t *ent, int clientNum,
 
 // ==============================================================================
 // Driver: Executes Macro Intent via Physical Engine
+//
+// Per-frame movement entry point.  Bot2_Think calls this exactly once per
+// tick after deciding what the bot wants to do at the macro level.
+//
+// Inputs:
+//   targetOrigin   — where the bot is trying to go (flag, item, evasion
+//                    spot, etc.).  May be {0,0,0} when there's no goal.
+//   aimDir         — combat aim direction (only consulted when lockAim).
+//   lockAim        — true: hold view at aimDir (combat).  false: align
+//                    view to movement direction (locomotion).
+//   wantsSpeed     — true: try strafe-jumping.  false: walk pace.
+//   hasFallback /
+//   fallbackOrigin — if Detour can't path to targetOrigin, retry against
+//                    fallbackOrigin (e.g. enemy flag for a chasing bot
+//                    whose target thief vanished).
+//
+// Internally drives an 8-state machine.  States transition based on
+// navmesh queries, off-mesh connections, ground/airborne contact, and
+// stuck detection.  See bot2_state_t in ai_bot2.h for state field uses.
+//
+//   0 WALK     — normal navmesh locomotion plus the running-jump
+//                gatekeeper (calls IsSafeToJump, fires upmove on a green
+//                light, transitions to AIRBORNE).  Also the home for
+//                jumppad / drop / wallrun off-mesh activation.
+//   1 ESCAPE   — stuck-recovery jump.  Run forward 300ms to build speed,
+//                jump 150ms, land, transition back to WALK.
+//   2 AIRBORNE — generic free-flight.  Air-control toward strafedir with
+//                the magic-angle math; logs Z-cross + landing telemetry.
+//   3 JUMPPAD  — trigger_push state.  Aim at cached upper-ledge waypoint
+//                while held by the pad, transition to WALK on landing.
+//   4 ELEVATOR — func_plat or func_door used as vertical lift.  Phase 0
+//                walks onto the platform when safe, phase 1 rides until
+//                moverState reaches the destination endpoint.
+//   5 DROP     — off-mesh drop-down.  360° ledge search to find the
+//                cleanest fall direction, walk off, wait for ground.
+//   6 JUMP     — off-mesh basic-jump fallback.  Used when WALK refused a
+//                strafe-jump; fires a straight-line jump over a gap.
+//   7 WALLRUN  — off-mesh wallrun.  6-phase sequence: jump → release →
+//                second-jump → ascend → optional kickflip → land.  See
+//                ai_bot2_wallrun.c for the simulator that pre-validates
+//                the wall before this state activates.
+//
+// Stuck detection runs early in the function (before any state branch)
+// using two complementary signals — snapshot displacement and accumulated
+// XY ground speed — both of which must trip together to fire recovery.
+// On recovery, calls Bot2_FindEscapeJump and transitions into ESCAPE.
 // ==============================================================================
 void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, vec3_t aimDir, qboolean lockAim, qboolean wantsSpeed, qboolean hasFallback, vec3_t fallbackOrigin) {
 	gentity_t* ent = &g_entities[clientNum];

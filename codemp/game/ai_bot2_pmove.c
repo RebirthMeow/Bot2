@@ -56,6 +56,39 @@ void BotBreadcrumb(const char* format, ...) {
 
 // ==============================================================================
 // Phantom Pmove Simulation Engine
+//
+// Runs the engine's real bg_pmove loop with synthetic input to predict where
+// a jump (or other movement) would actually land if the bot committed to it
+// right now.  The "phantom" name comes from the fact that the bot itself
+// never moves during the simulation — we copy its playerState into a local
+// dummy_ps, drive that copy through Pmove() ticks with hand-built usercmds,
+// and read the landing position out of the dummy without touching the real
+// world or the real bot.
+//
+// Inputs:
+//   in_ps          — starting playerState (NULL means "use the bot's current
+//                    real PS"); the simulator copies it and never mutates it.
+//   start_yaw      — bot's velocity yaw at takeoff (used as the reference for
+//                    the strafe-jump magic-angle math, not the view angle).
+//   strafeDir      — sign indicates strafe direction (+1 right, -1 left);
+//                    abs == 2 means "hard strafe" (no forward, just A or D).
+//   angle_fraction — 0.0 holds the lower-boundary key angle, 1.0 holds the
+//                    speed-optimal angle; intermediates blend the two.
+//   max_run_speed  — bot's effective ps->speed; gates the magic-angle
+//                    computation.
+//   lockAim/aimDir — when true, view yaw is held facing aimDir (combat lock)
+//                    instead of pointing along velocity.
+//
+// Outputs:
+//   out_pmove_land_pos — landing position on success.  Unchanged on fail.
+//   out_ps             — full post-landing playerState on success.  Used by
+//                        the chain evaluator to recurse into a follow-up jump.
+//   Returns qtrue on a clean landing, qfalse if the trajectory bailed out
+//   (hit a wall, slid off, dropped into water/lava/trigger_hurt, lost speed).
+//
+// The simulator inflates the bot's bbox by 12u in XY (except wallruns) so
+// jumps only succeed if the landing has a generous safety margin — prevents
+// "needle threading" landings that work in sim but fail in practice.
 // ==============================================================================
 qboolean SimulatePmoveTrajectory(gentity_t* ent, playerState_t* in_ps, float start_yaw, int strafeDir, float angle_fraction, float max_run_speed, vec3_t out_pmove_land_pos, playerState_t* out_ps, qboolean lockAim, vec3_t aimDir) {
 	if (!ent || !ent->inuse || !ent->client || level.intermissiontime || level.time == 0) return qfalse;
@@ -362,6 +395,23 @@ qboolean SimulatePmoveTrajectory(gentity_t* ent, playerState_t* in_ps, float sta
 // Kinematic Math & Jump Arc Prediction
 // ==============================================================================
 
+// Computes a heuristic cost for a candidate jump or jump-chain landing.
+// Lower is better.  IsSafeToJump picks the strafe direction whose chain has
+// the lowest score, so the formula is what determines the bot's pathing
+// personality (cautious vs. aggressive, line-cutting vs. waypoint-following).
+//
+// Inputs:
+//   nav_dist  — Detour topological path distance from landing to goal.
+//   line_dist — straight-line Euclidean distance from landing to goal.
+//   avg_spd2d — average horizontal speed across all jumps in the chain so
+//               far (longer chains with higher speed get a discount).
+//   z_loss    — drop in altitude from chain start to this landing (penalty
+//               for dropping into pits we then have to climb back out of).
+//
+// The function dispatches on `bot2_states[].test_variation` when the bot is
+// running the routing-test harness, exposing 10 different weight blends so
+// the harness can A/B test which scoring style wins.  Variation 2 (Corner
+// Cutter, 50/50 nav/line) is the proven default for live play.
 static float ScoreJumpChain(int clientNum, float nav_dist, float line_dist, float avg_spd2d, float z_loss) {
 	float speed_weight;
 	float two_jump_dist = avg_spd2d * 2.0f;
@@ -409,6 +459,23 @@ static float ScoreJumpChain(int clientNum, float nav_dist, float line_dist, floa
 // Single-threaded game loop means this is safe without a lock.
 static int s_lastFracWinner = 0;
 
+// Recursively explores 4-jump-deep continuations from a candidate first-jump
+// landing.  At each depth, tries 4 input combos (2 strafe directions × 2
+// angle fractions: 0.0 boundary, 1.0 optimal), simulates each through
+// SimulatePmoveTrajectory, and recurses if the landing is on the navmesh
+// and not in ledge danger.  Returns the LOWEST score reachable from this
+// chain, where "score" is whatever ScoreJumpChain returns (lower = better).
+//
+// The terminal-depth gate: only the 4th-jump landing is unconditionally
+// scored.  Intermediate landings only get to win if they're already within
+// 500u of the goal.  This stops a shallow chain with a slightly-better
+// score from beating a deeper chain that actually makes more progress.
+//
+// As a side effect, depth==1 frames write s_lastFracWinner (which fraction
+// won at the *first* recursive level) so the caller can record histograms
+// of which angle strategy is paying off in live play.
+//
+// Returns 9999999.0f if no valid chain was found from this position.
 static float EvaluateJumpChain(gentity_t* ent, vec3_t originalStart, playerState_t* ps, float total_time, float total_dist2d, int depth, int max_depth, vec3_t targetOrigin, float max_run_speed, qboolean lockAim, vec3_t aimDir) {
 	if (depth >= max_depth) return 9999999.0f;
 
@@ -472,6 +539,31 @@ static float EvaluateJumpChain(gentity_t* ent, vec3_t originalStart, playerState
 	return best_score;
 }
 
+// Public gate the WALK-state running-jump logic calls before committing to
+// a jump.  Asks: "if I jump right now in direction testDir, will I land on
+// the navmesh in a safe spot, AND is the best 4-jump chain that follows
+// this one good enough to bother?"
+//
+// On success (qtrue) returns:
+//   out_land_pos    — predicted first-jump landing.
+//   out_land_speed  — bot's effective max speed at landing (currently just
+//                     echoes max_run_speed; reserved for future tuning).
+//   out_chain_dist  — winning chain score (lower is better; the WALK code
+//                     compares the two strafe-direction scores and picks the
+//                     better one).
+//   out_chain_frac  — which angle fraction (0=boundary, 1=optimal) won at
+//                     depth-1 of the chain that produced out_chain_dist.
+//
+// On failure (qfalse): failReason is filled with a short diagnostic string
+// describing why the jump was rejected (off-navmesh, in trigger_hurt, ledge
+// danger, water/lava intersection, no valid chain, etc.).  Other out
+// parameters are unchanged.
+//
+// Internally: runs one SimulatePmoveTrajectory pass for the candidate
+// landing, validates it via NavMesh_IsPointOnMesh + TraceFloorScore, then
+// hands off to EvaluateJumpChain to score 4 jumps deep and pick the lowest.
+// If jump1 alone lands within 500u of the goal it competes with the chain
+// score; otherwise the chain evaluator owns the decision.
 qboolean IsSafeToJump(gentity_t* ent, int clientNum, vec3_t start, float current_speed, float vel_yaw, int testDir, float max_run_speed, char* failReason, char* warningString, vec3_t out_land_pos, float* out_land_speed, vec3_t targetOrigin, float* out_chain_dist, int* out_chain_frac, qboolean lockAim, vec3_t aimDir) {
 	vec3_t pmove_land;
 	playerState_t pmove_ps;

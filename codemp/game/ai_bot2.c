@@ -132,7 +132,15 @@ static int Bot2_GetAmmo(gentity_t* ent, int weapon) {
 	return 0;
 }
 
-// Builds a prioritized list of weapons and ammo to search for based on current inventory
+// Builds a prioritized list of pickup classnames to feed GetNearestItem when
+// the bot wants to upgrade its arsenal.  The ADD_SEARCH macro skips a weapon
+// the bot already owns (then optionally adds the matching ammo type if the
+// reserve is below a usable threshold), and adds the weapon classname when
+// the bot doesn't have it.  Order in the list is the priority order — caller
+// gets back at most maxItems entries.  heavyOnly=true restricts the list to
+// the three heavies (rocket / flechette / repeater); false also includes the
+// medium tier (concussion / bowcaster / blaster / demp2).  Returns the
+// number of entries actually written.
 static int Bot2_PopulateItemSearch(gentity_t* ent, const char** outList, int maxItems, qboolean heavyOnly) {
 	int count = 0;
 	int weapons = ent->client->ps.stats[STAT_WEAPONS];
@@ -161,6 +169,37 @@ static int Bot2_PopulateItemSearch(gentity_t* ent, const char** outList, int max
 
 // ==============================================================================
 // Main Bot Think Execution Engine
+//
+// Per-frame entry point installed onto a managed bot's customThink pointer
+// by Bot2_UpdateManagedBots.  Runs once per server frame for each active
+// Bot2-controlled bot.  Phases, in order:
+//
+//   1.  Sanity / lifecycle gates (entity valid, not in intermission, not
+//       a stale macroState from before a map restart).
+//   2.  Routing test harness (capture detection + restart, only active if
+//       the bot_test_routing svcmd has been issued).
+//   3.  Death handling (build a corpse-friendly ucmd, log fatality
+//       telemetry if we were mid-jump, return early to skip alive logic).
+//   4.  Role assignment (OFFENSE / CHASE / BASE based on team rank, with
+//       optional bot_forcerole override).
+//   5.  Spawn cooldown — early-return for the first 200ms after spawn
+//       so we don't fire the macro/movement systems while still in the
+//       respawn lock.
+//   6.  Weapon priority (Bryar default, upgrade to highest-tier heavy
+//       the bot is carrying with ammo, optional bot_forceweapon override).
+//   7.  Macro tactics engine — picks targetOrigin and (sometimes)
+//       combatTarget based on flag state, role, and 9 macroState values.
+//   8.  Targeting & weapon-fire logic — Bryar charge cycle, generic
+//       300ms pre-aim window for other weapons, post-fire aim hold.
+//   9.  Force power management — power provisioning (always granted),
+//       team-heal scan, absorb toggle (carrying flag / in enemy base),
+//       speed toggle (context-sensitive on macroState + distance).
+//   10. Movement dispatch — calls Bot2_ExecuteMovement with the chosen
+//       targetOrigin / aimDir / lockAim / wantsSpeed / fallbackOrigin.
+//   11. Hit/miss telemetry — decoupled from fire frame; records HIT on
+//       accuracy_hits increment or MISS on tele_missCheckDeadline expiry.
+//
+// All persistent per-bot state lives in bot2_states[clientNum].
 // ==============================================================================
 void Bot2_Think(int clientNum, int time) {
 	gentity_t* ent = &g_entities[clientNum]; usercmd_t ucmd; char serverCmd[1024];
