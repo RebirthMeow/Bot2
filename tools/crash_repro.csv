@@ -1,0 +1,11 @@
+map,result,time_to_cap_s,wall_total_s,cap_team,cap_capturer,exit_code,crash_line,log_path
+mp/ctf_ansion2,CAP,68.92,69.31,2,0,1,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_ansion2.log
+mp/ctf_virkoi,EXIT,,129.59,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_virkoi.log
+mp/ctf_kothis_v4,EXIT,,116.83,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_kothis_v4.log
+mp/ctf_kothis,EXIT,,61.69,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_kothis.log
+mp/ctf_ziost,EXIT,,24.17,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_ziost.log
+mp/ctf_ichtor,EXIT,,17.91,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_ichtor.log
+mp/ctf_taspir,EXIT,,49.62,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_taspir.log
+mp/ctf_ordmandell_station,EXIT,,73.05,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_ordmandell_station.log
+mp/ctf_corellia,EXIT,,18.19,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_corellia.log
+mp/ctf_ramodi,CAP,56.44,56.83,2,0,1,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_ramodi.log

@@ -91,56 +91,6 @@ qboolean IsInTriggerPush(gentity_t* ent) {
 	return qfalse;
 }
 
-// Resolve the apex/landing waypoint of the jumppad the bot is currently inside.
-//
-// A trigger_push entity QUAKED-spec mandates a target pointing at a
-// target_position which is the apex of the leap (see g_trigger.c, AimAtTarget
-// and the trigger_push QUAKED block).  That target_position IS the secondary
-// waypoint of the jumppad pair, and once airborne the bot cannot steer, so it
-// is the only correct camera lock for State 3.
-//
-// We deliberately bypass NavMesh_GetNextWaypoint here.  Detour's path query
-// returns whatever waypoint its cost / value function rates best from the
-// pre-jump position, which can drift to a different route entirely if the path
-// costs have been retuned — producing the "camera locked on the wrong waypoint"
-// bug after stepping onto a jumppad.  The trigger's own target_position is
-// stable and physically meaningful regardless of pathfinding state.
-//
-// Returns qtrue on success and writes the target_position's origin into
-// outTargetPos.  Returns qfalse if the bot is not inside a trigger_push, the
-// trigger has no target, or the target entity cannot be resolved.
-qboolean GetTriggerPushTargetOrigin(gentity_t* ent, vec3_t outTargetPos) {
-	gentity_t* push = NULL;
-	while ((push = G_Find(push, FOFS(classname), "trigger_push")) != NULL) {
-		if (!push->r.linked) continue;
-
-		vec3_t mins, maxs;
-		VectorAdd(ent->client->ps.origin, ent->r.mins, mins);
-		VectorAdd(ent->client->ps.origin, ent->r.maxs, maxs);
-		if (maxs[0] < push->r.absmin[0] || mins[0] > push->r.absmax[0]) continue;
-		if (maxs[1] < push->r.absmin[1] || mins[1] > push->r.absmax[1]) continue;
-		if (maxs[2] < push->r.absmin[2] || mins[2] > push->r.absmax[2]) continue;
-
-		// Found the trigger_push enclosing the bot.  Look up its target_position.
-		if (!push->target || !push->target[0]) return qfalse;
-		gentity_t* tgt = G_PickTarget(push->target);
-		if (!tgt) return qfalse;
-
-		// target_position calls G_SetOrigin at spawn, so r.currentOrigin is
-		// authoritative.  Fall back to s.origin if currentOrigin is unset
-		// (defensive — shouldn't happen for a properly spawned target_position).
-		if (tgt->r.currentOrigin[0] != 0.0f ||
-		    tgt->r.currentOrigin[1] != 0.0f ||
-		    tgt->r.currentOrigin[2] != 0.0f) {
-			VectorCopy(tgt->r.currentOrigin, outTargetPos);
-		} else {
-			VectorCopy(tgt->s.origin, outTargetPos);
-		}
-		return qtrue;
-	}
-	return qfalse;
-}
-
 // Shared XY footprint test: both the bot and the far waypoint must fall inside
 // the entity's current XY bounds (stable for any mover that only travels in Z).
 static qboolean ElevatorFootprintMatch(gentity_t* mover, float botX, float botY,
@@ -2667,35 +2617,22 @@ void Bot2_ExecuteMovement(int clientNum, usercmd_t* ucmd, vec3_t targetOrigin, v
 			VectorCopy(offmeshEnd, bot2_states[clientNum].tele_predPos);
 			lockSrc = "current-tick offmeshEnd";
 		}
-		// FALLBACK 2: trigger_push's own target_position.  Reasonable for
-		// horizontal toss-style pads (where target_position == apex);
-		// degrades gracefully for vertical pads (camera locks straight up,
-		// but the body is going straight up anyway, so it doesn't matter).
+		// FALLBACK 2: no offmesh data — face the macro goal (e.g. the flag) and
+		// hold W.  This is intentionally the ONLY fallback: trigger_push
+		// target_position is often straight overhead on vertical pads (useless
+		// for steering), and Detour's post-jumppad waypoint is the very thing
+		// whose value-function drift caused the original bug.  Aiming at the
+		// end goal at least gives the bot a coherent direction to lean toward
+		// for whatever in-air control is available, and it's correct on average
+		// even when the offmesh connection is missing.
+		else if (VectorLength(targetOrigin) > 1.0f) {
+			VectorCopy(targetOrigin, bot2_states[clientNum].tele_predPos);
+			lockSrc = "macro goal (no offmesh)";
+		}
+		// LAST RESORT: no goal either (shouldn't happen in normal play).  Keep
+		// whatever tele_predPos was already set to so we don't snap to <0,0,0>.
 		else {
-			vec3_t padTarget;
-			if (GetTriggerPushTargetOrigin(ent, padTarget)) {
-				VectorCopy(padTarget, bot2_states[clientNum].tele_predPos);
-				lockSrc = "trigger_push target_position";
-			}
-			// FALLBACK 3: post-jumppad waypoint from the path.  This is the
-			// pre-fix behaviour and is still subject to the value-function
-			// drift the cache was built to defeat — last-resort only.
-			else if (validPath) {
-				vec3_t waypointAfter;
-				if (NavMesh_GetNextWaypoint(ent->s.number, nextWp, targetOrigin, waypointAfter)) {
-					VectorCopy(waypointAfter, bot2_states[clientNum].tele_predPos);
-					lockSrc = "navmesh waypoint-after";
-				}
-				else {
-					VectorCopy(nextWp, bot2_states[clientNum].tele_predPos);
-					lockSrc = "navmesh nextWp";
-				}
-			}
-			// FALLBACK 4: no path at all — aim at the macro goal.
-			else {
-				VectorCopy(targetOrigin, bot2_states[clientNum].tele_predPos);
-				lockSrc = "macro targetOrigin";
-			}
+			lockSrc = "preserved (no goal)";
 		}
 
 		Bot2_PrintTelemetry(1,"[%s] STATE Transition: Entered Jump Pad (State 3) - Locked Target {%.0f, %.0f, %.0f} (src=%s)\n",
