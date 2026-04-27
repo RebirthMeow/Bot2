@@ -2,6 +2,17 @@
 
 This is a vibe coded project. Bot2 is a bot that works on any\* map and can kinda strafe jump. Navmesh is generated from BSP (details coming soon), and recast+detour library is added to the game, which is used for realtime pathfinding during gameplay. In addition, the bot2 performs strafe jumping inputs which are validated by pmove predictions. Also has stuff for jumppads, wallruns, elevators, basic CTF class roles logic, some shooting, etc. -Xen
 
+## For non-technical users
+
+Don't want to build from source? Grab the latest pre-built Windows binary from the **[Releases page](https://github.com/RebirthMeow/Bot2/releases)** — download the `Bot2-vX.Y.Z-windows.zip`, unzip it, and drop the included `bot2_jka` folder into your JKA install's `GameData\` folder. The zip ships with a working navmesh for at least one map so you can see the bot in action immediately.
+
+You'll need:
+
+1. A legitimate JKA install.
+2. [OpenJK](https://github.com/JACoders/OpenJK/releases) installed alongside it (Bot2 is an OpenJK mod, not a standalone game engine).
+
+Then launch `OpenJK_MP.exe`, go to **Setup → Mods → Bot2 (bot2_jka)**, click Load Mod, start a game, open the console (`~`) and type `/addbot kyle 5`. Full step-by-step is in the `README-RELEASE.txt` inside the zip.
+
 ---
 
 *The rest of this is AI summary.*
@@ -34,6 +45,36 @@ significant integration work.
 
 **License:** This fork inherits OpenJK's [GPLv2 license](LICENSE.txt).  Any
 changes are GPLv2 by virtue of being a derivative work.
+
+## Where the navmeshes come from
+
+Bot2 needs a `.navmesh` file for every map you want bots to play on. The
+release zip ships pre-baked navmeshes for at least one demo map so end
+users see the bot working out of the box. To build navmeshes for other
+maps, use the companion tool:
+
+**[daemonmap-jka](https://github.com/RebirthMeow/daemonmap-jka)** — offline
+navmesh compiler. Drag a JKA `.bsp` onto its included `daemonmap-jka.bat`
+wrapper; out comes a `.navmesh` you drop into `bot2_jka\maps\`.
+
+The two repos are decoupled: this repo is the playable mod, daemonmap-jka
+is the asset pipeline. The contract between them is the binary `.navmesh`
+format (Recast/Detour) plus an optional `.nav_connections` text sidecar
+that Bot2's `/bot_scan_wallruns` command writes for daemonmap-jka to bake
+wallrun connections into a second-pass navmesh. See daemonmap-jka's
+`docs/nav_connections_format.md` for the full sidecar spec.
+
+## Cutting a release
+
+Once your build (`build\Release\jampgamex86.dll` etc.) is up to date and
+you have at least one `.navmesh` you have rights to ship, run:
+
+```powershell
+.\package-release.ps1 -Version v1.0.0 -NavmeshDir "C:\path\to\maps\with\.navmesh\files"
+```
+
+That produces `release\Bot2-v1.0.0-windows.zip`. Upload it to a new
+release at <https://github.com/RebirthMeow/Bot2/releases/new>.
 
 ---
 

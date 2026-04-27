@@ -210,3 +210,9 @@ tools/should_work.csv
 #############
 # Personal exploratory work — not part of the published mod.
 old_other/
+
+#############
+## Release packaging
+#############
+# Output of package-release.ps1 — uploaded to GitHub Releases, never committed.
+release/
