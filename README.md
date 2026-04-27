@@ -4,14 +4,13 @@ This is a vibe coded project. Bot2 is a bot that works on any\* map and can kind
 
 ## For non-technical users
 
-Don't want to build from source? Grab the latest pre-built Windows binary from the **[Releases page](https://github.com/RebirthMeow/Bot2/releases)** — download the `Bot2-vX.Y.Z-windows.zip`, unzip it, and drop the included `bot2_jka` folder into your JKA install's `GameData\` folder. The zip ships with a working navmesh for at least one map so you can see the bot in action immediately.
+Don't want to build from source? Grab the latest pre-built Windows binary from the **[Releases page](https://github.com/RebirthMeow/Bot2/releases)** — download the `Bot2-vX.Y.Z-windows.zip`. The zip is **all-in-one**: it includes the OpenJK engine binaries plus the Bot2 mod and a working navmesh for at least one map.
 
-You'll need:
+**Prereq:** a legitimate JKA install (Steam / GOG / disc). Nothing else — you don't need to install OpenJK separately, the zip ships it.
 
-1. A legitimate JKA install.
-2. [OpenJK](https://github.com/JACoders/OpenJK/releases) installed alongside it (Bot2 is an OpenJK mod, not a standalone game engine).
+**Install:** unzip and copy the contents into your JKA install's `GameData\` folder. The new files (`openjk.x86.exe`, `SDL2.dll`, `bot2_jka\` etc.) sit alongside the original `jamp.exe` and the untouched `base\` folder.
 
-Then launch `OpenJK_MP.exe`, go to **Setup → Mods → Bot2 (bot2_jka)**, click Load Mod, start a game, open the console (`~`) and type `/addbot kyle 5`. Full step-by-step is in the `README-RELEASE.txt` inside the zip.
+**Launch:** run `openjk.x86.exe`, go to **Setup → Mods → Bot2 (bot2_jka)**, click Load Mod, start a game, open the console (`~`) and type `/addbot kyle 5`. Full step-by-step is in the `README-RELEASE.txt` at the root of the zip.
 
 ---
 
@@ -72,10 +71,24 @@ wallrun connections into a second-pass navmesh. See daemonmap-jka's
 
 ## Cutting a release
 
-1. Make sure `build\Release\jampgamex86.dll`, `cgamex86.dll`, and
-   `uix86.dll` are up to date (build the solution in Visual Studio).
+The release zip is **all-in-one**: engine binaries + Bot2 mod + navmesh.
+
+1. Build the **whole solution** in Visual Studio (Build → Build Solution).
+   The packaging script needs all of these in `build\Release\`:
+
+   - `openjk.x86.exe` — MP client (OpenJKMP target)
+   - `openjkded.x86.exe` — dedicated server (OpenJKDed target, optional)
+   - `rd-vanilla_x86.dll` — default renderer (rd-vanilla target)
+   - `rd-rend2_x86.dll` — alt renderer (rd-rend2 target, optional)
+   - `jampgamex86.dll` — your Bot2 game DLL
+   - `cgamex86.dll`, `uix86.dll` — game UI/client code
+
+   If only the game DLLs are present, the engine targets in your
+   solution are unchecked. Right-click each in Solution Explorer → Build.
+
 2. Make sure `navmesh example files\` contains at least one `.navmesh`
    you have rights to ship. Add new ones via the daemonmap-jka workflow.
+
 3. Run:
 
    ```powershell
@@ -83,7 +96,9 @@ wallrun connections into a second-pass navmesh. See daemonmap-jka's
    ```
 
    The script defaults `-NavmeshDir` to `navmesh example files\` and
-   produces `release\Bot2-v1.0.0-windows.zip`.
+   produces `release\Bot2-v1.0.0-windows.zip` (~10–15 MB depending on
+   how many navmeshes you ship).
+
 4. Upload the zip to a new release at
    <https://github.com/RebirthMeow/Bot2/releases/new>.
 

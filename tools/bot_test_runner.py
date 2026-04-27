@@ -79,8 +79,19 @@ PORT_INUSE_RE   = re.compile(r'WSAEADDRINUSE')
 
 # ---- defaults ---------------------------------------------------------------
 
-DEFAULT_BIN     = r'D:\ACodingBot\OpenJK\build\Release\openjkded.x86.exe'
-DEFAULT_BASE    = r'D:\ACodingBot\testplace\Jedi Academy\GameData'
+# Repo-relative default for the dedicated server binary.  This file lives at
+# <repo>/tools/bot_test_runner.py, so the build output is two levels up.
+_REPO_ROOT      = Path(__file__).resolve().parent.parent
+DEFAULT_BIN     = str(_REPO_ROOT / 'build' / 'Release' / 'openjkded.x86.exe')
+
+# JKA install location is per-user and cannot be hardcoded usefully.  Allow an
+# environment variable to supply it; otherwise the script will require
+# --jka-base on the command line.  Set JKA_GAMEDATA to the absolute path of
+# your "GameData" folder, e.g.
+#   PowerShell:  $env:JKA_GAMEDATA = 'C:\Games\Jedi Academy\GameData'
+#   bash:        export JKA_GAMEDATA="$HOME/.steam/steam/steamapps/common/Jedi Academy/GameData"
+DEFAULT_BASE    = os.environ.get('JKA_GAMEDATA', '')
+
 DEFAULT_PORT_BASE = 29070     # JKA's PORT_SERVER; first worker uses this
 
 # Bot we ask the server to addbot.  Any entry in base/botfiles/bots.txt
@@ -437,10 +448,12 @@ def main() -> None:
 
     # Process / asset paths
     ap.add_argument('--jka-base', default=DEFAULT_BASE,
-                    help=f'JKA GameData folder (must contain base/). '
-                         f'Default: {DEFAULT_BASE}')
+                    help='JKA GameData folder (must contain base/). '
+                         'Falls back to the JKA_GAMEDATA environment variable; '
+                         'required if neither is set.')
     ap.add_argument('--bin', default=DEFAULT_BIN,
-                    help=f'Path to openjkded.x86.exe. Default: {DEFAULT_BIN}')
+                    help=f'Path to openjkded.x86.exe. Defaults to this repo\'s '
+                         f'build\\Release output: {DEFAULT_BIN}')
 
     # Test parameters
     ap.add_argument('--timeout', type=int, default=120,
@@ -502,11 +515,19 @@ def main() -> None:
 
     args = ap.parse_args()
 
+    if not args.jka_base:
+        sys.exit('ERROR: JKA GameData path not set. '
+                 'Pass --jka-base, or set the JKA_GAMEDATA environment variable '
+                 'to the absolute path of your "GameData" folder.')
     base = Path(args.jka_base)
     if not (base / 'base').is_dir():
-        sys.exit(f'ERROR: {base / "base"} not found. Pass --jka-base.')
+        sys.exit(f'ERROR: {base / "base"} not found. '
+                 f'Check --jka-base / $JKA_GAMEDATA points at your JKA '
+                 f'GameData folder.')
     if not Path(args.bin).is_file():
-        sys.exit(f'ERROR: dedicated binary not found: {args.bin}')
+        sys.exit(f'ERROR: dedicated binary not found: {args.bin}\n'
+                 f'Build the OpenJKDed target in Visual Studio (Release config) '
+                 f'or pass --bin <path>.')
 
     Path(args.log_dir).mkdir(parents=True, exist_ok=True)
 

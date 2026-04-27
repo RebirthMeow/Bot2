@@ -1,36 +1,51 @@
-# package-release.ps1 - Build a Windows release zip for Bot2 GitHub Releases
+# package-release.ps1 - Build an all-in-one Windows release zip for Bot2 GitHub Releases
 #
 # Produces: release\Bot2-<version>-windows.zip
 #
-# The zip contains a single mod folder layout that drops straight into a
-# user's JKA install:
+# The zip is "all-in-one": OpenJK engine binaries + the Bot2 mod folder.
+# A user with a working JKA install can drop the contents of this zip
+# straight into <JKA install>\GameData\ and play. They do NOT need to
+# install OpenJK separately.
 #
-#   bot2_jka\
-#     jampgamex86.dll      \
-#     cgamex86.dll          > built mod DLLs
-#     uix86.dll            /
+# Layout inside the zip (everything overlays into <JKA install>\GameData\):
+#
+#   openjk.x86.exe         <- MP client engine (the user launches this)
+#   openjkded.x86.exe      <- dedicated server engine (host bot games)
+#   rd-vanilla_x86.dll     <- default renderer
+#   rd-rend2_x86.dll       <- alt renderer (modern features)
+#   SDL2.dll               <- runtime dependency
+#   README-RELEASE.txt     <- install + usage guide for end users
+#   bot2_jka\              <- the Bot2 mod folder
+#     jampgamex86.dll        - server-side game DLL (Bot2 AI lives here)
+#     cgamex86.dll           - client-side game DLL
+#     uix86.dll              - client-side UI DLL
+#     bot2.cfg               - autoexec config (enables bot_forcebot2 etc.)
 #     maps\
-#       <whatever .navmesh files you point at via -NavmeshDir>
-#     bot2.cfg              (autoexec config; spawns a bot for demonstration)
-#     README-RELEASE.txt    (install + usage guide for non-technical users)
+#       <whatever .navmesh files the -NavmeshDir contains>
 #
 # USAGE:
 #   .\package-release.ps1 -Version v1.0.0
 #   .\package-release.ps1 -Version v1.0.0 -NavmeshDir "C:\some\other\dir"
 #
-# The -NavmeshDir parameter points to a folder containing .navmesh files
-# (and optionally .nav_connections sidecars) to ship. The script copies
-# every .navmesh from that folder into the bundled bot2_jka\maps\ dir.
+# DEFAULT NavmeshDir: "navmesh example files\" at the repo root. Drop the
+# navmesh files you want shipped into that folder; they're tracked in git
+# AND included in every release zip from one source.
 #
-# DEFAULT: "navmesh example files\" at the repo root. Drop the navmesh
-# files you want shipped into that folder and they'll be tracked in git
-# AND included in every release zip - one folder, two distribution
-# channels, no separate steps. Override -NavmeshDir if you want to ship
-# a different curated set for a specific release.
+# REQUIRED BUILD ARTIFACTS in build\<BuildConfig>\:
+#   - openjk.x86.exe       (build the OpenJKMP target in Visual Studio)
+#   - openjkded.x86.exe    (build the OpenJKDed target)
+#   - rd-vanilla_x86.dll   (build the rd-vanilla target)
+#   - rd-rend2_x86.dll     (build the rd-rend2 target)
+#   - jampgamex86.dll      (game DLL — your Bot2 work lives here)
+#   - cgamex86.dll, uix86.dll
+#
+# Build the whole solution at once and you get all of these. If the
+# script complains about a missing target, build that target in VS.
 #
 # LEGAL NOTE: a .navmesh is derived data from a .bsp. For maps you didn't
 # author, get permission from the map author before shipping the .navmesh.
-# Don't ship navmeshes for stock Raven/LucasArts maps.
+# Don't ship navmeshes for stock Raven/LucasArts maps. The OpenJK engine
+# binaries shipped here are GPLv2 — fine to redistribute.
 #
 # NEXT STEP after running this:
 #   1. Go to https://github.com/RebirthMeow/Bot2/releases/new
@@ -54,32 +69,63 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
 # Default -NavmeshDir to the in-repo "navmesh example files" folder.
-# Curate that folder once (drop in the .navmesh files you want to ship);
-# every subsequent release picks them up automatically.
 if (-not $NavmeshDir) {
     $NavmeshDir = Join-Path $ScriptDir "navmesh example files"
     Write-Host "Using default -NavmeshDir: $NavmeshDir" -ForegroundColor DarkGray
 }
 
 $BuildDir   = Join-Path $ScriptDir "build\$BuildConfig"
+$Sdl2Source = Join-Path $ScriptDir "lib\SDL2\bin\x86\SDL2.dll"
 $ReleaseDir = Join-Path $ScriptDir "release"
 $StagingDir = Join-Path $ReleaseDir "staging"
 
-# --- Validate prerequisites ---
+# --- Validate build artifacts (engine + game DLLs) ---
 
-$requiredDlls = @("jampgamex86.dll", "cgamex86.dll", "uix86.dll")
-$missingDlls = @()
-foreach ($dll in $requiredDlls) {
-    if (-not (Test-Path (Join-Path $BuildDir $dll))) {
-        $missingDlls += $dll
+# Required = the script fails if these are missing.
+# Optional = the script warns and continues without them.
+$requiredArtifacts = @(
+    @{ Name = "openjk.x86.exe";      Required = $true;  ZipPath = "" },
+    @{ Name = "rd-vanilla_x86.dll";  Required = $true;  ZipPath = "" },
+    @{ Name = "jampgamex86.dll";     Required = $true;  ZipPath = "bot2_jka" },
+    @{ Name = "cgamex86.dll";        Required = $true;  ZipPath = "bot2_jka" },
+    @{ Name = "uix86.dll";           Required = $true;  ZipPath = "bot2_jka" },
+    @{ Name = "openjkded.x86.exe";   Required = $false; ZipPath = "" },
+    @{ Name = "rd-rend2_x86.dll";    Required = $false; ZipPath = "" }
+)
+
+$missing = @()
+$missingOptional = @()
+foreach ($a in $requiredArtifacts) {
+    $p = Join-Path $BuildDir $a.Name
+    if (-not (Test-Path $p)) {
+        if ($a.Required) { $missing += $a.Name } else { $missingOptional += $a.Name }
     }
 }
-if ($missingDlls.Count -gt 0) {
-    Write-Host "ERROR: missing built DLLs in $BuildDir :" -ForegroundColor Red
-    foreach ($m in $missingDlls) { Write-Host "  - $m" -ForegroundColor Red }
-    Write-Host "Build the project first (open the solution in Visual Studio and build $BuildConfig)." -ForegroundColor Red
+
+if ($missing.Count -gt 0) {
+    Write-Host "ERROR: missing required build artifacts in $BuildDir :" -ForegroundColor Red
+    foreach ($m in $missing) { Write-Host "  - $m" -ForegroundColor Red }
+    Write-Host "" -ForegroundColor Red
+    Write-Host "Build the full solution in Visual Studio (Build -> Build Solution)." -ForegroundColor Red
+    Write-Host "If only the game DLLs are present but engine targets are missing, the" -ForegroundColor Red
+    Write-Host "OpenJKMP / OpenJKDed / rd-vanilla / rd-rend2 projects in your solution" -ForegroundColor Red
+    Write-Host "may be unchecked. Right-click each in Solution Explorer -> Build." -ForegroundColor Red
     exit 1
 }
+
+if ($missingOptional.Count -gt 0) {
+    Write-Host "WARNING: optional artifacts missing (release will ship without them):" -ForegroundColor Yellow
+    foreach ($m in $missingOptional) { Write-Host "  - $m" -ForegroundColor Yellow }
+}
+
+if (-not (Test-Path $Sdl2Source)) {
+    Write-Host "ERROR: SDL2.dll not found at expected location:" -ForegroundColor Red
+    Write-Host "  $Sdl2Source" -ForegroundColor Red
+    Write-Host "OpenJK depends on SDL2 at runtime. Check lib\SDL2\bin\x86\." -ForegroundColor Red
+    exit 1
+}
+
+# --- Validate navmesh source ---
 
 if (-not (Test-Path $NavmeshDir)) {
     Write-Host "ERROR: -NavmeshDir does not exist: $NavmeshDir" -ForegroundColor Red
@@ -111,20 +157,29 @@ New-Item -ItemType Directory -Path $ModMapsDir -Force | Out-Null
 
 Write-Host "Staging release: $ReleaseName" -ForegroundColor Green
 
-# --- Copy mod DLLs ---
+# --- Copy engine + mod artifacts to their respective destinations ---
 
-foreach ($dll in $requiredDlls) {
-    Copy-Item -Path (Join-Path $BuildDir $dll) -Destination $ModDir -Force
-    Write-Host "  + bot2_jka\$dll"
+foreach ($a in $requiredArtifacts) {
+    $src = Join-Path $BuildDir $a.Name
+    if (-not (Test-Path $src)) { continue }    # already-warned optional
+
+    $destDir = if ($a.ZipPath) { Join-Path $PayloadDir $a.ZipPath } else { $PayloadDir }
+    Copy-Item -Path $src -Destination $destDir -Force
+    $relPath = if ($a.ZipPath) { "$($a.ZipPath)\$($a.Name)" } else { $a.Name }
+    Write-Host "  + $relPath"
 }
 
-# --- Copy navmeshes ---
+# --- Copy SDL2.dll to zip root ---
+
+Copy-Item -Path $Sdl2Source -Destination $PayloadDir -Force
+Write-Host "  + SDL2.dll"
+
+# --- Copy navmeshes (and any matching sidecars) ---
 
 foreach ($nm in $navmeshFiles) {
     Copy-Item -Path $nm.FullName -Destination $ModMapsDir -Force
     Write-Host "  + bot2_jka\maps\$($nm.Name)"
 
-    # Also copy any matching .nav_connections sidecar if it sits next to it
     $sidecar = Join-Path $nm.DirectoryName ($nm.BaseName + ".nav_connections")
     if (Test-Path $sidecar) {
         Copy-Item -Path $sidecar -Destination $ModMapsDir -Force
@@ -133,14 +188,10 @@ foreach ($nm in $navmeshFiles) {
 }
 
 # --- Write a starter bot2.cfg ---
-# Autoexecutes when the user runs the mod. Keeps the demo "it works"
-# friction-free: pick a map with bots already, no command-line typing.
+
 $bot2Cfg = @"
 // bot2.cfg - default config shipped with the Bot2 release.
 // Loaded automatically when the bot2_jka mod is selected.
-//
-// Tweak any of the cvars below or comment them out as you like.
-// Console commands (open with the tilde key '~') let you change them at runtime.
 
 // 0/1 - apply Bot2 logic to all bots regardless of name suffix.
 //       Default 0 means only bots whose name ends in "_v2" use Bot2 logic.
@@ -157,53 +208,62 @@ echo "[bot2.cfg] loaded - bot_forcebot2 enabled, all /addbot will use Bot2 AI"
 "@
 $bot2Cfg | Set-Content -LiteralPath (Join-Path $ModDir "bot2.cfg") -Encoding ASCII
 
-# --- Write README-RELEASE.txt aimed at non-technical users ---
+# --- Write README-RELEASE.txt at the zip root ---
 
 $shippedMaps = ($navmeshFiles | ForEach-Object { "  - " + $_.BaseName }) -join "`r`n"
 
 $ReleaseReadme = @"
-Bot2 - Windows release $Version
-================================
+Bot2 - Windows release $Version (all-in-one)
+=============================================
 
 WHAT THIS IS
   Bot2 is an advanced bot AI for "Star Wars: Jedi Knight: Jedi Academy"
-  multiplayer. It runs on top of OpenJK (the community engine port). The
-  bots use a navmesh for pathfinding, can perform strafe-jumps, wallruns,
-  jumppad and elevator routing, and play CTF as offense/chase/base.
+  multiplayer. The bots use a navmesh for pathfinding, can perform
+  strafe-jumps, wallruns, jumppad and elevator routing, and play CTF
+  with offense / chase / base roles.
 
-PREREQUISITES
-  1. A legitimate copy of Jedi Knight: Jedi Academy installed.
-  2. OpenJK installed - get the latest release from:
-        https://github.com/JACoders/OpenJK/releases
-     Install it into your JKA folder so you have OpenJK_MP.exe in
-     the same directory as the original jamp.exe (typically
-     C:\Program Files (x86)\LucasArts\Star Wars Jedi Knight Jedi
-     Academy\GameData\, or wherever you have JKA installed).
+  This zip is ALL-IN-ONE: it includes the OpenJK engine (the modern
+  community port of the JKA engine) AND the Bot2 mod. You do not need
+  to install OpenJK separately.
 
-INSTALLING THE BOT2 MOD
-  Inside this zip is a folder named "bot2_jka". Drop that whole folder
-  into your JKA install's "GameData" folder. So you should end up with:
-     <JKA install>\GameData\bot2_jka\jampgamex86.dll
-     <JKA install>\GameData\bot2_jka\cgamex86.dll
-     <JKA install>\GameData\bot2_jka\uix86.dll
-     <JKA install>\GameData\bot2_jka\bot2.cfg
-     <JKA install>\GameData\bot2_jka\maps\<mapname>.navmesh
-     <JKA install>\GameData\bot2_jka\README-RELEASE.txt   (this file)
+PREREQUISITE
+  A legitimate copy of "Star Wars: Jedi Knight: Jedi Academy" installed
+  (Steam, GOG, or original disc). The original .pk3 game-asset files
+  must be present in <JKA install>\GameData\base\.
 
-  Do NOT overwrite anything in <JKA install>\GameData\base\. Bot2 is a
-  separate mod folder; your vanilla install stays untouched.
+INSTALLATION
+  1. Locate your JKA install. The folder structure looks like:
+        <JKA install>\GameData\base\assets0.pk3
+        <JKA install>\GameData\base\assets1.pk3   (etc.)
+        <JKA install>\GameData\jamp.exe           (vanilla launcher)
+
+  2. Open the Bot2 zip you downloaded.
+
+  3. Copy ALL the contents of the zip into <JKA install>\GameData\.
+     After copying, your GameData folder should contain:
+        <JKA install>\GameData\base\        (already there - untouched)
+        <JKA install>\GameData\openjk.x86.exe        (NEW - launches Bot2)
+        <JKA install>\GameData\openjkded.x86.exe     (NEW - dedicated server)
+        <JKA install>\GameData\rd-vanilla_x86.dll    (NEW)
+        <JKA install>\GameData\rd-rend2_x86.dll      (NEW, if shipped)
+        <JKA install>\GameData\SDL2.dll              (NEW)
+        <JKA install>\GameData\bot2_jka\             (NEW - the mod folder)
+
+     The vanilla "base\" folder is untouched. The OpenJK engine binaries
+     sit alongside the original jamp.exe; they don't replace anything.
 
 LAUNCHING
-  1. Run OpenJK_MP.exe.
-  2. From the main menu choose:  Setup -> Mods -> Bot2 (bot2_jka)
+  1. Run openjk.x86.exe (the new file in your GameData folder).
+
+  2. From the main menu choose: Setup -> Mods -> Bot2 (bot2_jka)
      Click "Load Mod". The game restarts under the mod.
-     (Or skip the menu and launch with: OpenJK_MP.exe +set fs_game bot2_jka)
+     (Or skip the menu and launch with: openjk.x86.exe +set fs_game bot2_jka)
 
   3. Start a multiplayer game on one of the included maps:
 $shippedMaps
 
      Open the in-game console with the tilde key (~). To begin:
-        /devmap <mapname>          (loads the map in dev mode, e.g. /devmap mp/ctf1)
+        /devmap <mapname>          (loads the map; e.g. /devmap mp/ctf1)
         /addbot kyle 5             (adds a Bot2 bot named "kyle" at skill 5)
         /addbot reborn 5 b         (adds another bot to the blue team)
      With "bot_forcebot2 1" set in bot2.cfg, every /addbot uses the Bot2 AI.
@@ -213,13 +273,11 @@ USEFUL CONSOLE COMMANDS
   /bot_forcerole <0|1|2|3>                   - 1=offense, 2=chase, 3=base, 0=auto
   /bot_telemetry <0|1|2|3>                   - 1=movement, 2=combat, 3=both
   /navdraw 800                               - render navmesh polys near you
-  /navdrawoffmesh 800                        - render the off-mesh connections
+  /navdrawoffmesh 800                        - render off-mesh connections
                                                (drops, jumps, wallruns)
   /bot_scan_wallruns                         - headless scanner; writes
-                                               <mapname>.nav_connections so
-                                               you can rebuild the navmesh
-                                               with wallruns. See "BUILDING
-                                               YOUR OWN NAVMESHES" below.
+                                               <mapname>.nav_connections
+                                               (see "BUILDING NAVMESHES")
 
 BUILDING YOUR OWN NAVMESHES (other maps)
   Bot2 needs a .navmesh file for every map you want bots to play on.
@@ -228,35 +286,40 @@ BUILDING YOUR OWN NAVMESHES (other maps)
 
         https://github.com/RebirthMeow/daemonmap-jka
 
-  Quick path: install daemonmap-jka, drag your map's .bsp file onto
-  daemonmap-jka.bat. The resulting .navmesh goes into bot2_jka\maps\.
+  Quick path: download daemonmap-jka, drag your map's .bsp file onto
+  daemonmap-jka.bat. The resulting .navmesh goes into:
+        <JKA install>\GameData\bot2_jka\maps\<mapname>.navmesh
 
 TROUBLESHOOTING
   - "I get 'NavMesh not found' or bots stand still."
-    The map you loaded doesn't have a .navmesh in bot2_jka\maps\. Either
-    pick one of the included maps, or build a navmesh for that map with
-    daemonmap-jka.
+    The map you loaded doesn't have a .navmesh in bot2_jka\maps\. Pick
+    one of the included maps, or build a navmesh with daemonmap-jka.
 
   - "/addbot says no bots available."
     Vanilla JKA needs the bot list populated for that game type. Try
-    /devmap mp/ctf1 first (CTF maps come with a default bot list); other
-    types may need a custom .bot file.
+    /devmap mp/ctf1 first (CTF maps come with a default bot list).
 
-  - "OpenJK won't start / says missing pak files."
+  - "openjk.x86.exe won't start / says missing pak files."
     OpenJK requires a working JKA install with the original .pk3 files
     in GameData\base\. Reinstall JKA from your original disc / Steam.
 
+  - "Antivirus / Windows SmartScreen flags openjk.x86.exe."
+    OpenJK is open-source community software and isn't code-signed by a
+    commercial CA. SmartScreen flags unsigned executables. If you don't
+    trust this build, grab the engine binaries directly from
+    https://github.com/JACoders/OpenJK/releases — they're functionally
+    equivalent (this fork doesn't modify the engine source).
+
 LICENSE
-  GPLv2, inherited from OpenJK. See LICENSE.txt in the source repo.
+  GPLv2, inherited from OpenJK. See the source repo for full license text.
 
 SOURCE
-  https://github.com/RebirthMeow/Bot2
-
-  Companion navmesh compiler:
-  https://github.com/RebirthMeow/daemonmap-jka
+  Bot2:           https://github.com/RebirthMeow/Bot2
+  Companion tool: https://github.com/RebirthMeow/daemonmap-jka
+  Upstream OpenJK: https://github.com/JACoders/OpenJK
 "@
 
-$ReleaseReadme | Set-Content -LiteralPath (Join-Path $ModDir "README-RELEASE.txt") -Encoding UTF8
+$ReleaseReadme | Set-Content -LiteralPath (Join-Path $PayloadDir "README-RELEASE.txt") -Encoding UTF8
 
 # --- Zip it up ---
 
@@ -266,8 +329,6 @@ if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
 Write-Host ""
 Write-Host "Compressing to: $ZipPath" -ForegroundColor Green
 Compress-Archive -Path "$PayloadDir\*" -DestinationPath $ZipPath -CompressionLevel Optimal
-
-# --- Cleanup staging ---
 
 Remove-Item -Recurse -Force $StagingDir
 
