@@ -34,8 +34,12 @@ endif(WIN32)
 set(MPGameDefines ${MPSharedDefines} "_GAME" )
 set(MPGameGameFiles
 	"${MPDir}/game/ai_bot2.c"
-	"${MPDir}/game/ai_bot2_nav.c"
+	"${MPDir}/game/ai_bot2_pmove.c"
+	"${MPDir}/game/ai_bot2_combat.c"
+	"${MPDir}/game/ai_bot2_wallrun.c"
+	"${MPDir}/game/ai_bot2_movement.c"
 	"${MPDir}/game/ai_bot2.h"
+	"${MPDir}/game/ai_bot2_internal.h"
 	"${MPDir}/game/ai_main.c"
 	"${MPDir}/game/ai_util.c"
 	"${MPDir}/game/ai_wpnav.c"
