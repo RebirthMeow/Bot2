@@ -50,12 +50,18 @@ changes are GPLv2 by virtue of being a derivative work.
 
 Bot2 needs a `.navmesh` file for every map you want bots to play on. The
 release zip ships pre-baked navmeshes for at least one demo map so end
-users see the bot working out of the box. To build navmeshes for other
-maps, use the companion tool:
+users see the bot working out of the box. The shipped navmeshes live in
+[`navmesh example files/`](navmesh%20example%20files/) at the repo root —
+that folder is the single source of truth for what gets bundled in
+releases. See its README for the curation convention.
+
+To build navmeshes for other maps, use the companion tool:
 
 **[daemonmap-jka](https://github.com/RebirthMeow/daemonmap-jka)** — offline
 navmesh compiler. Drag a JKA `.bsp` onto its included `daemonmap-jka.bat`
-wrapper; out comes a `.navmesh` you drop into `bot2_jka\maps\`.
+wrapper; out comes a `.navmesh` you drop into `bot2_jka\maps\` (for your
+own use) or into this repo's `navmesh example files\` folder (to ship
+with the next release).
 
 The two repos are decoupled: this repo is the playable mod, daemonmap-jka
 is the asset pipeline. The contract between them is the binary `.navmesh`
@@ -66,15 +72,24 @@ wallrun connections into a second-pass navmesh. See daemonmap-jka's
 
 ## Cutting a release
 
-Once your build (`build\Release\jampgamex86.dll` etc.) is up to date and
-you have at least one `.navmesh` you have rights to ship, run:
+1. Make sure `build\Release\jampgamex86.dll`, `cgamex86.dll`, and
+   `uix86.dll` are up to date (build the solution in Visual Studio).
+2. Make sure `navmesh example files\` contains at least one `.navmesh`
+   you have rights to ship. Add new ones via the daemonmap-jka workflow.
+3. Run:
 
-```powershell
-.\package-release.ps1 -Version v1.0.0 -NavmeshDir "C:\path\to\maps\with\.navmesh\files"
-```
+   ```powershell
+   .\package-release.ps1 -Version v1.0.0
+   ```
 
-That produces `release\Bot2-v1.0.0-windows.zip`. Upload it to a new
-release at <https://github.com/RebirthMeow/Bot2/releases/new>.
+   The script defaults `-NavmeshDir` to `navmesh example files\` and
+   produces `release\Bot2-v1.0.0-windows.zip`.
+4. Upload the zip to a new release at
+   <https://github.com/RebirthMeow/Bot2/releases/new>.
+
+To ship a different curated set for a specific release (e.g. a "wallrun
+demo" release with only wallrun-heavy maps), pass `-NavmeshDir` with a
+path to a temp folder containing exactly the navmeshes you want.
 
 ---
 

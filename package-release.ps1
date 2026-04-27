@@ -15,13 +15,18 @@
 #     README-RELEASE.txt    (install + usage guide for non-technical users)
 #
 # USAGE:
-#   .\package-release.ps1 -Version v1.0.0 -NavmeshDir "C:\path\to\maps"
+#   .\package-release.ps1 -Version v1.0.0
+#   .\package-release.ps1 -Version v1.0.0 -NavmeshDir "C:\some\other\dir"
 #
 # The -NavmeshDir parameter points to a folder containing .navmesh files
-# (and optionally .nav_connections sidecars) you want to ship. The script
-# copies every .navmesh from that folder into the bundled bot2_jka\maps\
-# directory. Pick whichever map(s) you want to demonstrate the bot on -
-# at least one is required to give end users a working demo.
+# (and optionally .nav_connections sidecars) to ship. The script copies
+# every .navmesh from that folder into the bundled bot2_jka\maps\ dir.
+#
+# DEFAULT: "navmesh example files\" at the repo root. Drop the navmesh
+# files you want shipped into that folder and they'll be tracked in git
+# AND included in every release zip - one folder, two distribution
+# channels, no separate steps. Override -NavmeshDir if you want to ship
+# a different curated set for a specific release.
 #
 # LEGAL NOTE: a .navmesh is derived data from a .bsp. For maps you didn't
 # author, get permission from the map author before shipping the .navmesh.
@@ -37,7 +42,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$NavmeshDir,
 
     [Parameter(Mandatory = $false)]
@@ -47,6 +52,14 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
+
+# Default -NavmeshDir to the in-repo "navmesh example files" folder.
+# Curate that folder once (drop in the .navmesh files you want to ship);
+# every subsequent release picks them up automatically.
+if (-not $NavmeshDir) {
+    $NavmeshDir = Join-Path $ScriptDir "navmesh example files"
+    Write-Host "Using default -NavmeshDir: $NavmeshDir" -ForegroundColor DarkGray
+}
 
 $BuildDir   = Join-Path $ScriptDir "build\$BuildConfig"
 $ReleaseDir = Join-Path $ScriptDir "release"
@@ -70,13 +83,18 @@ if ($missingDlls.Count -gt 0) {
 
 if (-not (Test-Path $NavmeshDir)) {
     Write-Host "ERROR: -NavmeshDir does not exist: $NavmeshDir" -ForegroundColor Red
+    if ($NavmeshDir -like "*navmesh example files*") {
+        Write-Host "       The default folder is missing. Create it and drop .navmesh files into it:" -ForegroundColor Red
+        Write-Host "         New-Item -ItemType Directory -Path '$NavmeshDir' -Force" -ForegroundColor Red
+    }
     exit 1
 }
 
 $navmeshFiles = Get-ChildItem -Path $NavmeshDir -Filter "*.navmesh" -File
 if ($navmeshFiles.Count -eq 0) {
     Write-Host "ERROR: no .navmesh files found in $NavmeshDir" -ForegroundColor Red
-    Write-Host "       Compile at least one .bsp with daemonmap-jka first." -ForegroundColor Red
+    Write-Host "       Drop at least one .navmesh into that folder before packaging a release." -ForegroundColor Red
+    Write-Host "       Build navmeshes with: https://github.com/RebirthMeow/daemonmap-jka" -ForegroundColor Red
     exit 1
 }
 
