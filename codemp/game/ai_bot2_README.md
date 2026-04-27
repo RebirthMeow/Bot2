@@ -1,3 +1,7 @@
+*This document was written entirely by AI (Anthropic's Claude) based on
+automated codebase analysis, with maintainer review. Mistakes that slipped
+through review are possible — please file an issue if you spot one.*
+
 # Bot2: Advanced CTF Bot AI
 
 Bot2 is a custom AI bot system layered on top of OpenJK's vanilla bot

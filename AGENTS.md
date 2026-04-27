@@ -1,3 +1,7 @@
+*This document was written entirely by AI (Anthropic's Claude) based on
+automated codebase analysis, with maintainer review. Mistakes that slipped
+through review are possible — please file an issue if you spot one.*
+
 # AGENTS.md
 
 This repository is a fork of [OpenJK](https://github.com/JACoders/OpenJK) with
