@@ -2,6 +2,7 @@
 
 This is a vibe coded project. Bot2 is a bot that works on any\* map and can kinda strafe jump. Navmesh is generated from BSP (see daemonmap-jka info below), and recast+detour library is added to the game, which is used for realtime pathfinding during gameplay. In addition, the bot2 performs strafe jumping inputs which are validated by pmove predictions. Also has stuff for jumppads, wallruns, elevators, basic CTF class roles logic, some shooting, etc. -Xen
 
+*The rest of this is AI summary.*
 ## For non-technical users
 
 Don't want to build from source? Grab the latest pre-built Windows binary from the **[Releases page](https://github.com/RebirthMeow/Bot2/releases)** — download the `Bot2-vX.Y.Z-windows.zip`. The zip is **all-in-one**: it includes the OpenJK engine binaries plus the Bot2 mod and a working navmesh for at least one map.
@@ -14,7 +15,7 @@ Don't want to build from source? Grab the latest pre-built Windows binary from t
 
 ---
 
-*The rest of this is AI summary.*
+
 
 This repository is a fork of [OpenJK](https://github.com/JACoders/OpenJK) that
 adds an advanced multiplayer CTF bot AI ("Bot2") on top of the upstream
