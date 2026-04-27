@@ -13,8 +13,12 @@ How a single map run works
    file (bot_test_logs/<mapname>.log) and an in-memory queue.
 3. Wait for the "------ Server Initialization ------" line, then send
    `kickall` and `addbot <name> 5 r` over rcon UDP.
-4. Watch the queue for the [CAP] marker (success) or hit a wall-clock
-   deadline (failure).  Kill the server, record the row, move on.
+4. Watch the queue for "Exit: Capturelimit hit." — the engine's native
+   exit-condition log (G_LogPrintf in g_main.c::LogExit) which fires
+   when level.teamScores[X] >= capturelimit.  With capturelimit 1 and a
+   single bot in play, this fires on the first successful cap.  Hit a
+   wall-clock deadline on failure.  Kill the server, record the row,
+   move on.
 
 Parallel mode
 -------------
@@ -48,8 +52,17 @@ from typing import Optional
 
 # ---- regexes ----------------------------------------------------------------
 
-# Cap marker emitted by g_team.c: "[CAP] team=N capturer=N time=N name=..."
-CAP_RE          = re.compile(r'\[CAP\] team=(\d+) capturer=(\d+) time=(\d+)')
+# Capture detection: with capturelimit 1, the engine's CheckExitRules path in
+# g_main.c calls LogExit("Capturelimit hit.") which routes through
+# G_LogPrintf -> trap->Print and surfaces in the dedicated server's stdout as
+# "Exit: Capturelimit hit.".  This is engine-native — no game-source
+# instrumentation required, so the bot mod stays drop-in friendly.
+#
+# Note: the engine doesn't include the capturer's clientNum or team in this
+# message.  With kickall + a single addbot, those are inferable: the only bot
+# on the server is the capturer.  cap_team / cap_capturer columns are kept in
+# the CSV for compatibility but populated empty.
+CAP_RE          = re.compile(r'Exit:\s*Capturelimit hit', re.IGNORECASE)
 SERVER_READY_RE = re.compile(r'-+ Server Initialization -+', re.IGNORECASE)
 CRASH_RE        = re.compile(r'\b(Sys_Error|FATAL|ERROR: CL_ParseGamestate|Hunk_Alloc failed)\b')
 
@@ -322,14 +335,11 @@ def run_one_map(args: argparse.Namespace, mapname: str, worker_idx: int) -> dict
                             print(f'{tag}   * tracked actual bind port: '
                                   f'{actual_port}')
 
-                m = CAP_RE.search(line)
-                if m:
+                if CAP_RE.search(line):
                     cap_at = time.monotonic()
-                    cap_info = {
-                        'team':         int(m.group(1)),
-                        'capturer':     int(m.group(2)),
-                        'leveltime_ms': int(m.group(3)),
-                    }
+                    # The engine's "Exit: Capturelimit hit." line carries no
+                    # team/capturer/leveltime fields.  cap_info stays None;
+                    # the CSV cap_team and cap_capturer columns will be empty.
                     break
 
             # ---- rcon handshake ----

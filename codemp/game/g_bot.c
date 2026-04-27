@@ -1017,19 +1017,6 @@ static void G_AddBot( const char *name, float skill, const char *team, int delay
 	}
 }
 
-qboolean g_isBot2Spawn = qfalse;
-
-/*
-===============
-Svcmd_AddBot2_f
-===============
-*/
-void Svcmd_AddBot2_f( void ) {
-	g_isBot2Spawn = qtrue;
-	Svcmd_AddBot_f();
-	g_isBot2Spawn = qfalse;
-}
-
 /*
 ===============
 Svcmd_AddBot_f

@@ -1998,9 +1998,6 @@ void ClientThink_real( gentity_t *ent ) {
 	// mark the time, so the connection sprite can be removed
 	ucmd = &ent->client->pers.cmd;
 
-	// Input recorder — must run before pmove so we capture raw intent, not post-processed state
-	G_RecordInputFrame( ent, ucmd );
-
 	if ( client && !isFollowing && (client->ps.eFlags2&EF2_HELD_BY_MONSTER) )
 	{
 		G_HeldByMonster( ent, ucmd );

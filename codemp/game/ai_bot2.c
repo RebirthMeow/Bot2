@@ -749,6 +749,9 @@ void Bot2_Think(int clientNum, int time) {
 							ucmd.buttons &= ~BUTTON_ALT_ATTACK;
 							// State 3 (The Hold): Keep aiming at the target until the shot hits
 							bot2_states[clientNum].combatAimHoldTime = level.time + (int)(tof * 1000.0f);
+							// Arm the miss-detection deadline: ToF + 200ms grace.
+							bot2_states[clientNum].tele_missCheckPending = qtrue;
+							bot2_states[clientNum].tele_missCheckDeadline = level.time + (int)(tof * 1000.0f) + 200;
 						}
 					}
 				}
@@ -769,6 +772,11 @@ void Bot2_Think(int clientNum, int time) {
 					
 					if (intentDuration >= 300 && synced) { // 300ms pre-fire aiming window
 						bot2_states[clientNum].combatAimHoldTime = level.time + (int)(tof * 1000.0f);
+						// Arm the miss-detection deadline: ToF + 200ms grace.  Continuous-fire
+						// weapons refresh this every tick; single-shot weapons set it once and
+						// the hit-detection block resolves it.
+						bot2_states[clientNum].tele_missCheckPending = qtrue;
+						bot2_states[clientNum].tele_missCheckDeadline = level.time + (int)(tof * 1000.0f) + 200;
 
 						if (ucmd.weapon == WP_REPEATER) {
 							if (Bot2_GetAmmo(ent, WP_REPEATER) >= 30) ucmd.buttons |= BUTTON_ALT_ATTACK; else ucmd.buttons |= BUTTON_ATTACK;
@@ -892,11 +900,21 @@ void Bot2_Think(int clientNum, int time) {
 
 	Bot2_ExecuteMovement(clientNum, &ucmd, targetOrigin, aimDir, lockAim, wantsSpeed, hasFallback, fallbackOrigin);
 
-	// --- TELEMETRY: DECOUPLED HIT DETECTION ---
+	// --- TELEMETRY: DECOUPLED HIT/MISS DETECTION ---
+	// Hits are signalled by accuracy_hits incrementing (engine increments only when
+	// the shot connects with a player).  Misses are inferred from the timeout deadline
+	// armed at the fire site — by the time it elapses (ToF + grace), if no hit landed
+	// the shot either flew past the target, hit a wall, or struck a teammate.  This
+	// keeps miss tracking entirely inside bot2 with no g_missile.c instrumentation.
 	if (ent->client->accuracy_hits > bot2_states[clientNum].tele_lastHits) {
 		int hits = ent->client->accuracy_hits - bot2_states[clientNum].tele_lastHits;
 		Bot2_PrintTelemetry(2, "%s -> [RESULT] TRUE HIT for %d tick(s)!\n", bot2_states[clientNum].tele_lastAimString, hits);
 		bot2_states[clientNum].tele_lastHits = ent->client->accuracy_hits;
+		bot2_states[clientNum].tele_missCheckPending = qfalse;
+	}
+	else if (bot2_states[clientNum].tele_missCheckPending && level.time > bot2_states[clientNum].tele_missCheckDeadline) {
+		Bot2_PrintTelemetry(2, "%s -> [RESULT] MISSED (no hit within ToF window)\n", bot2_states[clientNum].tele_lastAimString);
+		bot2_states[clientNum].tele_missCheckPending = qfalse;
 	}
 
 	botstates[clientNum]->lastucmd = ucmd; trap->BotUserCommand(ent->s.number, &ucmd);

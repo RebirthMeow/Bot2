@@ -29,67 +29,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "g_navmesh.h"
 #include "g_nav.h"
 #include "bg_saga.h"
+#include "g_crash_handler.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#include <dbghelp.h>
-#include <stdio.h>
-
-typedef BOOL (WINAPI *MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD dwPid, HANDLE hFile, MINIDUMP_TYPE DumpType,
-    CONST PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
-    CONST PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
-    CONST PMINIDUMP_CALLBACK_INFORMATION CallbackParam
-);
-
-static PVOID g_vehHandle = NULL; // Handle for RemoveVectoredExceptionHandler on shutdown
-
-static LONG WINAPI GameCrashHandler(EXCEPTION_POINTERS *pExceptionInfo) {
-    HMODULE hDbgHelp;
-    MINIDUMPWRITEDUMP pDump;
-    HANDLE hFile;
-    MINIDUMP_EXCEPTION_INFORMATION mdei;
-    FILE* f;
-    static int crashed = 0;
-
-    DWORD code = pExceptionInfo->ExceptionRecord->ExceptionCode;
-    if (code != EXCEPTION_ACCESS_VIOLATION &&
-        code != EXCEPTION_ILLEGAL_INSTRUCTION &&
-        code != EXCEPTION_ARRAY_BOUNDS_EXCEEDED &&
-        code != EXCEPTION_INT_DIVIDE_BY_ZERO &&
-        code != EXCEPTION_STACK_OVERFLOW) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    if (crashed) return EXCEPTION_CONTINUE_SEARCH;
-    crashed = 1;
-
-    hDbgHelp = LoadLibraryA("dbghelp.dll");
-    if (hDbgHelp) {
-        pDump = (MINIDUMPWRITEDUMP)GetProcAddress(hDbgHelp, "MiniDumpWriteDump");
-        if (pDump) {
-            hFile = CreateFileA("jampgame_crash.dmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                mdei.ThreadId = GetCurrentThreadId();
-                mdei.ExceptionPointers = pExceptionInfo;
-                mdei.ClientPointers = FALSE;
-                pDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mdei, NULL, NULL);
-                CloseHandle(hFile);
-            }
-        }
-    }
-    
-    f = fopen("jampgame_crash.txt", "a");
-    if (f) {
-        fprintf(f, "!!! FATAL GAME DLL CRASH DETECTED !!!\n");
-        fprintf(f, "Exception Code: 0x%08X\n", code);
-        fprintf(f, "Fault Address: 0x%p\n", pExceptionInfo->ExceptionRecord->ExceptionAddress);
-        fflush(f);
-        fclose(f);
-    }
-
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-#endif
 #include "b_local.h"
 #include "game/bg_public.h"
 #include "qcommon/game_version.h"
@@ -243,11 +184,7 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	vmCvar_t	ckSum;
 	char serverinfo[MAX_INFO_STRING] = {0};
 
-#ifdef _WIN32
-	if (!g_vehHandle) {
-		g_vehHandle = AddVectoredExceptionHandler(1, GameCrashHandler);
-	}
-#endif
+	G_CrashHandler_Install();
 
 	Rand_Init( randomSeed );
 	srand( randomSeed );
@@ -433,11 +370,6 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 		G_SoundIndex( "sound/player/gurp2.wav" );
 	}
 
-	// Register bot_telemetry unconditionally so it is always accessible
-	// regardless of whether bot_enable is set. BotAISetup will re-register
-	// it safely if bots are enabled — Q3 double-registration is a no-op.
-	{ static vmCvar_t s_bot_telemetry; trap->Cvar_Register(&s_bot_telemetry, "bot_telemetry", "0", CVAR_ARCHIVE); }
-
 	if ( trap->Cvar_VariableIntegerValue( "bot_enable" ) ) {
 		BotAISetup( restart );
 		BotAILoadMap( restart );
@@ -523,15 +455,10 @@ void G_ShutdownGame( int restart ) {
 	int i = 0;
 	gentity_t *ent;
 
-#ifdef _WIN32
 	// Must remove the VEH handler before the DLL is unloaded.
-	// If the handler stays registered after VM_Free, it becomes a dangling pointer.
-	// Any subsequent exception in the process will call into freed memory and crash.
-	if (g_vehHandle) {
-		RemoveVectoredExceptionHandler(g_vehHandle);
-		g_vehHandle = NULL;
-	}
-#endif
+	// If it stays registered after VM_Free, it becomes a dangling pointer; any
+	// subsequent exception in the process would call into freed memory.
+	G_CrashHandler_Shutdown();
 
 	NavMesh_Free();
 

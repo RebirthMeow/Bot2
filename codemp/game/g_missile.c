@@ -24,9 +24,6 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "g_local.h"
 #include "w_saber.h"
 #include "qcommon/q_shared.h"
-#include "ai_main.h"   // This tells the file what 'botstates' is
-#include "ai_bot2.h"   // This tells the file what 'bot2_states' is
-
 #define	MISSILE_PRESTEP_TIME	50
 
 extern void laserTrapStick( gentity_t *ent, vec3_t endpos, vec3_t normal );
@@ -387,23 +384,8 @@ void G_MissileImpact( gentity_t *ent, trace_t *trace ) {
 
 		isKnockedSaber = qtrue;
 	}
-	
-	// ======================================================================
-	// BOT TELEMETRY: TRUE MISS (SINGLE LINE)
-	// ======================================================================
-	gentity_t *shooter = ent->parent;
-	if (shooter && shooter->client && botstates[shooter->s.number]) {
-		// ENTITYNUM_WORLD means it hit a wall/floor
-		if (other->s.number == ENTITYNUM_WORLD) {
-			if (trap->Cvar_VariableIntegerValue("bot_telemetry") & 2) {
-				trap->Print("%s -> [RESULT] MISSED (Hit map geometry).\n", 
-					bot2_states[shooter->s.number].tele_lastAimString);
-			}
-		}
-	}
-	// ======================================================================
-	
-	
+
+
 	// I would glom onto the FL_BOUNCE code section above, but don't feel like risking breaking something else
 	if ( (!other->takedamage && (ent->bounceCount > 0 || ent->bounceCount == -5) && ( ent->flags&(FL_BOUNCE_SHRAPNEL) ) ) || ((trace->surfaceFlags&SURF_FORCEFIELD)&&!ent->splashDamage&&!ent->splashRadius&&(ent->bounceCount > 0 || ent->bounceCount == -5)) )
 	{

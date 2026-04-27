@@ -104,6 +104,13 @@ typedef struct bot2_state_s {
 	char tele_lastAimString[256];
 	int tele_lastFireTime;
 	int tele_lastHits;
+
+	// Miss-detection timeout: armed by the fire path, disarmed when a hit
+	// registers; the hit-detection block at end of Bot2_Think logs a MISS
+	// telemetry line if the deadline expires with no hit.  Lets us track
+	// shot outcomes without instrumenting g_missile.c.
+	qboolean tele_missCheckPending;
+	int tele_missCheckDeadline;
 	} bot2_state_t;
 extern bot2_state_t bot2_states[MAX_CLIENTS];
 

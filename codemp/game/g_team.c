@@ -801,14 +801,6 @@ int Team_TouchOurFlag( gentity_t *ent, gentity_t *other, int team ) {
 	//PrintMsg( NULL, "%s" S_COLOR_WHITE " captured the %s flag!\n", cl->pers.netname, TeamName(OtherTeam(team)));
 	PrintCTFMessage(other->s.number, team, CTFMESSAGE_PLAYER_CAPTURED_FLAG);
 
-	// Stable, machine-grep-friendly marker for the external bot-test runner
-	// (tools/bot_test_runner.py).  Prints once per cap to dedicated stdout so
-	// the harness can detect a successful CTF run without parsing the network
-	// CTF message protocol.  Format is locked: do not reformat or remove.
-	trap->Print("[CAP] team=%d capturer=%d time=%d name=%s\n",
-		team, other->s.number, level.time,
-		(cl && cl->pers.netname[0]) ? cl->pers.netname : "?");
-
 	cl->ps.powerups[enemy_flag] = 0;
 
 	teamgame.last_flag_capture = level.time;

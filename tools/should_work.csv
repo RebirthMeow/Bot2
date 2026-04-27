@@ -1,5 +1,0 @@
-map,result,time_to_cap_s,wall_total_s,cap_team,cap_capturer,exit_code,crash_line,log_path
-mp/ctf_genarius,CAP,68.47,68.83,2,0,1,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_genarius.log
-mp/ctf_illimiran,EXIT,,20.34,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_illimiran.log
-mp/ctf_dathomir,CAP,52.83,53.2,2,0,1,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_dathomir.log
-mp/ctf_belgaroth,EXIT,,22.45,,,3221225477,,D:\ACodingBot\OpenJK\tools\bot_test_logs\mp_ctf_belgaroth.log

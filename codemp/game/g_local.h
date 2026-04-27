@@ -1354,9 +1354,6 @@ void ClientThink			( int clientNum, usercmd_t *ucmd );
 void ClientEndFrame			( gentity_t *ent );
 void G_RunClient			( gentity_t *ent );
 
-// Input recorder — call once per ClientThink tick before pmove runs
-void G_RecordInputFrame( gentity_t *ent, usercmd_t *ucmd );
-
 //
 // g_team.c
 //
@@ -1403,8 +1400,6 @@ void G_CheckBotSpawn( void );
 void G_RemoveQueuedBotBegin( int clientNum );
 qboolean G_BotConnect( int clientNum, qboolean restart );
 void Svcmd_AddBot_f( void );
-void Svcmd_AddBot2_f( void );
-extern qboolean g_isBot2Spawn;
 void Svcmd_BotList_f( void );
 void BotInterbreedEndMatch( void );
 qboolean G_DoesMapSupportGametype(const char *mapname, int gametype);

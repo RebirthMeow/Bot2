@@ -194,3 +194,19 @@ compile_commands.json
 #############
 [Bb]uild*/
 cmake-build-*
+
+#############
+## Bot2 test output
+#############
+# Per-map server logs and per-worker fs_homepaths created by
+# tools/bot_test_runner.py.  Regenerated on every test run; not source.
+tools/bot_test_logs/
+tools/bot_test_results.csv
+tools/crash_repro.csv
+tools/should_work.csv
+
+#############
+## Local scratch
+#############
+# Personal exploratory work — not part of the published mod.
+old_other/

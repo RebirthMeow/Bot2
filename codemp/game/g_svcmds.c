@@ -25,6 +25,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // this file holds commands that can be executed by the server console, but not remote clients
 
 #include "g_local.h"
+#include "bot2_svcmds.h"
 
 /*
 ==============================================================================
@@ -473,70 +474,6 @@ typedef struct svcmd_s {
 	void		(*func)(void);
 	qboolean	dedicated;
 } svcmd_t;
-
-#include "ai_bot2.h"
-
-void Svcmd_BotWallrunCheck_f( void ) {
-	char arg[MAX_TOKEN_CHARS];
-	int clientNum = 0;
-	if (trap->Argc() >= 2) {
-		trap->Argv(1, arg, sizeof(arg));
-		clientNum = atoi(arg);
-	}
-	if (clientNum < 0 || clientNum >= MAX_CLIENTS) {
-		trap->Print("Usage: bot_wallrun_check <clientnum>\n");
-		return;
-	}
-	gentity_t *ent = &g_entities[clientNum];
-	trap->Print("[WR-CHECK] Checking wallrun surface for client %d (%s)...\n",
-		clientNum, (ent->client ? ent->client->pers.netname : "?"));
-	Bot2_WallrunCheck(ent);
-}
-
-void Svcmd_BotScanWallruns_f( void ) {
-	char arg[MAX_TOKEN_CHARS];
-
-	int   gridStep    = 96;
-	float radius      = 0.0f;
-	int   clientNum   = 0;
-
-	if (trap->Argc() >= 2) { trap->Argv(1, arg, sizeof(arg)); gridStep  = atoi(arg); }
-	if (trap->Argc() >= 3) { trap->Argv(2, arg, sizeof(arg)); radius    = (float)atof(arg); }
-	if (trap->Argc() >= 4) { trap->Argv(3, arg, sizeof(arg)); clientNum = atoi(arg); }
-
-	Bot2_ScanWallruns(gridStep, radius, clientNum);
-}
-
-void Svcmd_BotScanWallrunsHeadless_f( void ) {
-	char arg[MAX_TOKEN_CHARS];
-
-	int   gridStep    = 96;
-	float radius      = 0.0f;
-	int   clientNum   = 0;
-
-	if (trap->Argc() >= 2) { trap->Argv(1, arg, sizeof(arg)); gridStep  = atoi(arg); }
-	if (trap->Argc() >= 3) { trap->Argv(2, arg, sizeof(arg)); radius    = (float)atof(arg); }
-	if (trap->Argc() >= 4) { trap->Argv(3, arg, sizeof(arg)); clientNum = atoi(arg); }
-
-	Bot2_ScanWallrunsHeadless(gridStep, radius, clientNum);
-}
-
-void Svcmd_BotTestRouting_f( void ) {
-	char arg[MAX_TOKEN_CHARS];
-	int clientNum = 0;
-	if (trap->Argc() >= 2) {
-		trap->Argv(1, arg, sizeof(arg));
-		clientNum = atoi(arg);
-	}
-	bot2_states[clientNum].test_active = qtrue;
-	bot2_states[clientNum].test_variation = 0;
-	bot2_states[clientNum].test_run_idx = 0;
-	bot2_states[clientNum].test_retries = 0;
-	bot2_states[clientNum].test_had_flag = qfalse;
-	bot2_states[clientNum].test_waiting_for_teleport = qtrue;
-	trap->Print("Started Routing Test on Bot %d. Resetting Bot for fresh run...\n", clientNum);
-	G_Kill(&g_entities[clientNum]);
-}
 
 int svcmdcmp( const void *a, const void *b ) {
 	return Q_stricmp( (const char *)a, ((svcmd_t*)b)->name );
