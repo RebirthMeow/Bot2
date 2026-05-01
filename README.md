@@ -72,45 +72,6 @@ that Bot2's `/bot_scan_wallruns` command writes for daemonmap-jka to bake
 wallrun connections into a second-pass navmesh. See daemonmap-jka's
 `docs/nav_connections_format.md` for the full sidecar spec.
 
-## Cutting a release
-
-The release zip is **all-in-one**: engine binaries + Bot2 mod + navmesh.
-
-1. Build the **whole solution** in Visual Studio (Build → Build Solution).
-   The packaging script needs all of these in `build\Release\`:
-
-   - `openjk.x86.exe` — MP client (OpenJKMP target)
-   - `openjkded.x86.exe` — dedicated server (OpenJKDed target, optional)
-   - `rd-vanilla_x86.dll` — default renderer (rd-vanilla target)
-   - `rd-rend2_x86.dll` — alt renderer (rd-rend2 target, optional)
-   - `jampgamex86.dll` — your Bot2 game DLL
-   - `cgamex86.dll`, `uix86.dll` — game UI/client code
-
-   If only the game DLLs are present, the engine targets in your
-   solution are unchecked. Right-click each in Solution Explorer → Build.
-
-2. Make sure `navmesh example files\` contains at least one `.navmesh`
-   you have rights to ship. Add new ones via the daemonmap-jka workflow.
-
-3. Run:
-
-   ```powershell
-   .\package-release.ps1 -Version v1.0.0
-   ```
-
-   The script defaults `-NavmeshDir` to `navmesh example files\` and
-   produces `release\Bot2-v1.0.0-windows.zip` (~10–15 MB depending on
-   how many navmeshes you ship).
-
-4. Upload the zip to a new release at
-   <https://github.com/RebirthMeow/Bot2/releases/new>.
-
-To ship a different curated set for a specific release (e.g. a "wallrun
-demo" release with only wallrun-heavy maps), pass `-NavmeshDir` with a
-path to a temp folder containing exactly the navmeshes you want.
-
----
-
 ## Upstream acknowledgment
 
 This fork is built on [OpenJK](https://github.com/JACoders/OpenJK) — the
